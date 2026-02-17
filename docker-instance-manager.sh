@@ -110,6 +110,9 @@ Create options:
   --apt-packages "<pkgs>"    Stored for optional build convenience
   --mount <host:container>   Extra mount, repeatable
   --verbose                  Default gateway verbose mode for this instance (stored)
+  --http-proxy <url>         HTTP proxy URL (default: http://host.docker.internal:10871)
+  --https-proxy <url>        HTTPS proxy URL (default: same as --http-proxy)
+  --no-proxy <csv>           NO_PROXY value (default: localhost,127.0.0.1,::1,host.docker.internal)
 
 Global options:
   --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
@@ -346,6 +349,7 @@ cmd_create() {
   local gateway_port bridge_port
   local config_dir workspace_dir
   local image bind token apt_packages home_volume expose_bridge gateway_verbose
+  local http_proxy https_proxy no_proxy
   local -a extra_mounts
 
   env_file="$(instance_env_file "$instance")"
@@ -361,6 +365,9 @@ cmd_create() {
   home_volume="${OPENCLAW_HOME_VOLUME:-}"
   expose_bridge="${OPENCLAW_EXPOSE_BRIDGE_PORT:-0}"
   gateway_verbose="${OPENCLAW_GATEWAY_VERBOSE:-}"
+  http_proxy="${OPENCLAW_HTTP_PROXY:-http://host.docker.internal:10871}"
+  https_proxy="${OPENCLAW_HTTPS_PROXY:-$http_proxy}"
+  no_proxy="${OPENCLAW_NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal}"
   extra_mounts=()
 
   while [[ $# -gt 0 ]]; do
@@ -418,6 +425,18 @@ cmd_create() {
         gateway_verbose="1"
         shift
         ;;
+      --http-proxy)
+        http_proxy="$2"
+        shift 2
+        ;;
+      --https-proxy)
+        https_proxy="$2"
+        shift 2
+        ;;
+      --no-proxy)
+        no_proxy="$2"
+        shift 2
+        ;;
       *)
         echo "Unknown option for create: $1" >&2
         exit 1
@@ -457,6 +476,9 @@ OPENCLAW_IMAGE=$image
 OPENCLAW_DOCKER_APT_PACKAGES=$apt_packages
 OPENCLAW_HOME_VOLUME=$home_volume
 OPENCLAW_EXTRA_MOUNTS=$(IFS=,; echo "${extra_mounts[*]}")
+OPENCLAW_HTTP_PROXY=$http_proxy
+OPENCLAW_HTTPS_PROXY=$https_proxy
+OPENCLAW_NO_PROXY=$no_proxy
 EOF
 
   write_extra_compose \
@@ -480,6 +502,11 @@ EOF
   echo "  workspace dir: $workspace_dir"
   if [[ -n "$home_volume" ]]; then
     echo "  home volume: $home_volume"
+  fi
+  if [[ -n "$http_proxy" || -n "$https_proxy" ]]; then
+    echo "  http proxy: ${http_proxy:-off}"
+    echo "  https proxy: ${https_proxy:-off}"
+    echo "  no_proxy: ${no_proxy:-off}"
   fi
   if [[ ${#extra_mounts[@]} -gt 0 ]]; then
     echo "  extra mounts: $(IFS=', '; echo "${extra_mounts[*]}")"
