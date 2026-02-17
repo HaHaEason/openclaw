@@ -269,6 +269,13 @@ YAML
 
     cat >>"$file" <<'YAML'
   openclaw-cli:
+YAML
+    if [[ "$network_mode" == "host" ]]; then
+      cat >>"$file" <<'YAML'
+    network_mode: host
+YAML
+    fi
+    cat >>"$file" <<'YAML'
     volumes:
 YAML
     if [[ -n "$home_volume" ]]; then
@@ -280,9 +287,7 @@ YAML
     for mount in "$@"; do
       printf '      - %s\n' "$mount" >>"$file"
     done
-  fi
-
-  if [[ "$network_mode" == "host" ]]; then
+  elif [[ "$network_mode" == "host" ]]; then
     cat >>"$file" <<'YAML'
   openclaw-cli:
     network_mode: host
