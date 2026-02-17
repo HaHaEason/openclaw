@@ -14,6 +14,30 @@ require_cmd() {
   fi
 }
 
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+grep_file_lines() {
+  local pattern="$1"
+  local file="$2"
+  if has_cmd rg; then
+    rg -n "$pattern" "$file"
+  else
+    grep -En "$pattern" "$file" || true
+  fi
+}
+
+file_has_pattern() {
+  local pattern="$1"
+  local file="$2"
+  if has_cmd rg; then
+    rg -q "$pattern" "$file"
+  else
+    grep -Eq "$pattern" "$file"
+  fi
+}
+
 ensure_docker_ready() {
   require_cmd docker
   if ! docker compose version >/dev/null 2>&1; then
@@ -101,7 +125,7 @@ is_port_reserved() {
   local file
   for file in "$STATE_DIR"/*.env; do
     [[ -e "$file" ]] || continue
-    if rg -q "^OPENCLAW_GATEWAY_PORT=${port}$|^OPENCLAW_BRIDGE_PORT=${port}$" "$file"; then
+    if file_has_pattern "^OPENCLAW_GATEWAY_PORT=${port}$|^OPENCLAW_BRIDGE_PORT=${port}$" "$file"; then
       return 0
     fi
   done
@@ -437,9 +461,9 @@ cmd_list() {
     found=true
     name="$(basename "$file" .env)"
     printf '%s\n' "[$name]"
-    rg -n '^(OPENCLAW_IMAGE|OPENCLAW_GATEWAY_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR)=' "$file" \
+    grep_file_lines '^(OPENCLAW_IMAGE|OPENCLAW_GATEWAY_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR)=' "$file" \
       | sed 's/^[0-9]\+://'
-    rg -n '^(OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
+    grep_file_lines '^(OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
       | sed 's/^[0-9]\+://'
     echo ""
   done
