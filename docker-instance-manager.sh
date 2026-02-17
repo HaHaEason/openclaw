@@ -84,7 +84,7 @@ Usage:
   ./docker-instance-manager.sh [--instances-dir <dir>] <command> [args...]
   ./docker-instance-manager.sh build [--image <image>] [--apt-packages "<pkg1 pkg2>"]
   ./docker-instance-manager.sh create <name> [options]
-  ./docker-instance-manager.sh up <name>
+  ./docker-instance-manager.sh up <name> [--verbose]
   ./docker-instance-manager.sh down <name>
   ./docker-instance-manager.sh restart <name>
   ./docker-instance-manager.sh status [name]
@@ -109,6 +109,7 @@ Create options:
   --home-volume <name|path>  Mount to /home/node (named volume or host path)
   --apt-packages "<pkgs>"    Stored for optional build convenience
   --mount <host:container>   Extra mount, repeatable
+  --verbose                  Default gateway verbose mode for this instance (stored)
 
 Global options:
   --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
@@ -132,7 +133,7 @@ Plugin uninstall options:
 Examples:
   ./docker-instance-manager.sh build --image openclaw:v2026.2.15
   ./docker-instance-manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
-  ./docker-instance-manager.sh up prod-a
+  ./docker-instance-manager.sh up prod-a --verbose
   ./docker-instance-manager.sh cli prod-a -- channels status --probe
   ./docker-instance-manager.sh devices prod-a -- list
   ./docker-instance-manager.sh plugin-install prod-a @openclaw/zalo --set-json ./plugin-config.json --restart
@@ -344,7 +345,7 @@ cmd_create() {
   local env_file compose_file
   local gateway_port bridge_port
   local config_dir workspace_dir
-  local image bind token apt_packages home_volume expose_bridge
+  local image bind token apt_packages home_volume expose_bridge gateway_verbose
   local -a extra_mounts
 
   env_file="$(instance_env_file "$instance")"
@@ -359,6 +360,7 @@ cmd_create() {
   apt_packages="${OPENCLAW_DOCKER_APT_PACKAGES:-}"
   home_volume="${OPENCLAW_HOME_VOLUME:-}"
   expose_bridge="${OPENCLAW_EXPOSE_BRIDGE_PORT:-0}"
+  gateway_verbose="${OPENCLAW_GATEWAY_VERBOSE:-}"
   extra_mounts=()
 
   while [[ $# -gt 0 ]]; do
@@ -412,6 +414,10 @@ cmd_create() {
         extra_mounts+=("$2")
         shift 2
         ;;
+      --verbose)
+        gateway_verbose="1"
+        shift
+        ;;
       *)
         echo "Unknown option for create: $1" >&2
         exit 1
@@ -445,6 +451,7 @@ OPENCLAW_GATEWAY_PORT=$gateway_port
 OPENCLAW_BRIDGE_PORT=$bridge_port
 OPENCLAW_EXPOSE_BRIDGE_PORT=$expose_bridge
 OPENCLAW_GATEWAY_BIND=$bind
+OPENCLAW_GATEWAY_VERBOSE=$gateway_verbose
 OPENCLAW_GATEWAY_TOKEN=$token
 OPENCLAW_IMAGE=$image
 OPENCLAW_DOCKER_APT_PACKAGES=$apt_packages
@@ -487,7 +494,26 @@ EOF
 cmd_up() {
   ensure_docker_ready
   local instance="$1"
+  local gateway_verbose=""
+  shift
   ensure_instance_exists "$instance"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --verbose)
+        gateway_verbose="1"
+        shift
+        ;;
+      *)
+        echo "Unknown option for up: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -n "$gateway_verbose" ]]; then
+    OPENCLAW_GATEWAY_VERBOSE="$gateway_verbose" run_compose "$instance" up -d openclaw-gateway
+    return
+  fi
   run_compose "$instance" up -d openclaw-gateway
 }
 
@@ -819,8 +845,8 @@ main() {
       cmd_create "$@"
       ;;
     up)
-      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh up <name>" >&2; exit 1; }
-      cmd_up "$1"
+      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh up <name> [--verbose]" >&2; exit 1; }
+      cmd_up "$@"
       ;;
     down)
       [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh down <name>" >&2; exit 1; }
