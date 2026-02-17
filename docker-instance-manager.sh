@@ -38,6 +38,38 @@ file_has_pattern() {
   fi
 }
 
+read_instance_env_value() {
+  local env_file="$1"
+  local key="$2"
+  if [[ ! -f "$env_file" ]]; then
+    return
+  fi
+  grep -E "^${key}=" "$env_file" | tail -n 1 | cut -d= -f2-
+}
+
+resolve_instance_gateway_token() {
+  local instance="$1"
+  local env_file config_dir config_file token
+
+  env_file="$(instance_env_file "$instance")"
+  config_dir="$(read_instance_env_value "$env_file" "OPENCLAW_CONFIG_DIR")"
+  config_file="$config_dir/openclaw.json"
+  token=""
+
+  if [[ -f "$config_file" ]]; then
+    if has_cmd jq; then
+      token="$(jq -r '.gateway.auth.token // empty' "$config_file" 2>/dev/null || true)"
+    elif has_cmd node; then
+      token="$(node -e 'const fs=require("fs");try{const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write((c?.gateway?.auth?.token||"").trim());}catch{}' "$config_file" 2>/dev/null || true)"
+    fi
+  fi
+
+  if [[ -z "$token" ]]; then
+    token="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_TOKEN")"
+  fi
+  printf '%s' "$token"
+}
+
 ensure_docker_ready() {
   require_cmd docker
   if ! docker compose version >/dev/null 2>&1; then
@@ -497,6 +529,10 @@ cmd_cli() {
 cmd_devices() {
   ensure_docker_ready
   local instance="$1"
+  local token
+  local has_auth_arg=false
+  local arg
+  local -a device_args
   shift
   ensure_instance_exists "$instance"
   if [[ $# -gt 0 && "$1" == "--" ]]; then
@@ -506,9 +542,24 @@ cmd_devices() {
     echo "Missing devices args. Example: ./docker-instance-manager.sh devices <name> -- list" >&2
     exit 1
   fi
+
+  device_args=("$@")
+  for arg in "${device_args[@]}"; do
+    if [[ "$arg" == "--token" || "$arg" == "--password" ]]; then
+      has_auth_arg=true
+      break
+    fi
+  done
+  if [[ "$has_auth_arg" == false ]]; then
+    token="$(resolve_instance_gateway_token "$instance")"
+    if [[ -n "$token" ]]; then
+      device_args+=(--token "$token")
+    fi
+  fi
+
   # Run against the running gateway container to avoid loopback resolution issues
   # from one-shot CLI containers.
-  run_compose "$instance" exec openclaw-gateway node dist/index.js devices "$@"
+  run_compose "$instance" exec openclaw-gateway node dist/index.js devices "${device_args[@]}"
 }
 
 cmd_list() {
