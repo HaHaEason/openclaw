@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
-STATE_DIR="${OPENCLAW_INSTANCES_DIR:-$ROOT_DIR/.docker-instances}"
+STATE_DIR="${OPENCLAW_INSTANCES_DIR:-$HOME/.openclaw/docker-instances}"
 DEFAULT_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
 DEFAULT_BIND="${OPENCLAW_GATEWAY_BIND:-lan}"
 
@@ -13,8 +13,6 @@ require_cmd() {
     exit 1
   fi
 }
-
-mkdir -p "$STATE_DIR"
 
 ensure_docker_ready() {
   require_cmd docker
@@ -27,6 +25,7 @@ ensure_docker_ready() {
 usage() {
   cat <<'EOF'
 Usage:
+  ./docker-instance-manager.sh [--instances-dir <dir>] <command> [args...]
   ./docker-instance-manager.sh build [--image <image>] [--apt-packages "<pkg1 pkg2>"]
   ./docker-instance-manager.sh create <name> [options]
   ./docker-instance-manager.sh up <name>
@@ -49,6 +48,9 @@ Create options:
   --home-volume <name|path>  Mount to /home/node (named volume or host path)
   --apt-packages "<pkgs>"    Stored for optional build convenience
   --mount <host:container>   Extra mount, repeatable
+
+Global options:
+  --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
 
 Examples:
   ./docker-instance-manager.sh build --image openclaw:v2026.2.15
@@ -245,6 +247,7 @@ cmd_create() {
   local instance="$1"
   shift
   validate_instance_name "$instance"
+  mkdir -p "$STATE_DIR"
 
   local env_file compose_file
   local gateway_port bridge_port
@@ -446,6 +449,24 @@ cmd_list() {
 }
 
 main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --instances-dir)
+        [[ $# -ge 2 ]] || { echo "Missing value for --instances-dir" >&2; exit 1; }
+        STATE_DIR="$2"
+        shift 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
   if [[ $# -lt 1 ]]; then
     usage
     exit 1
