@@ -23,7 +23,7 @@ services:
     init: true
     restart: unless-stopped
     command: >
-      sh -lc 'exec node dist/index.js gateway --bind "${OPENCLAW_GATEWAY_BIND:-lan}" --port 18789 ${OPENCLAW_GATEWAY_VERBOSE:+--verbose}'
+      sh -lc 'exec node dist/index.js gateway --bind "${OPENCLAW_GATEWAY_BIND:-lan}" --port "${OPENCLAW_GATEWAY_LISTEN_PORT:-18789}" ${OPENCLAW_GATEWAY_VERBOSE:+--verbose}'
 
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-openclaw:local}

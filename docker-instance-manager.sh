@@ -373,6 +373,7 @@ cmd_create() {
   local gateway_port bridge_port
   local config_dir workspace_dir
   local image bind token apt_packages home_volume expose_bridge gateway_verbose network_mode
+  local gateway_listen_port
   local http_proxy https_proxy no_proxy
   local -a extra_mounts
 
@@ -394,6 +395,7 @@ cmd_create() {
   https_proxy="${OPENCLAW_HTTPS_PROXY:-$http_proxy}"
   no_proxy="${OPENCLAW_NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal}"
   extra_mounts=()
+  gateway_listen_port="${OPENCLAW_GATEWAY_LISTEN_PORT:-18789}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -481,6 +483,11 @@ cmd_create() {
   if [[ -z "$gateway_port" ]]; then
     gateway_port="$(next_available_port 18789)"
   fi
+  if [[ "$network_mode" == "host" ]]; then
+    gateway_listen_port="$gateway_port"
+  else
+    gateway_listen_port="18789"
+  fi
   if [[ "$expose_bridge" == "1" ]]; then
     if [[ -z "$bridge_port" ]]; then
       bridge_port="$(next_available_port "$((gateway_port + 1))")"
@@ -501,6 +508,7 @@ cmd_create() {
 OPENCLAW_CONFIG_DIR=$config_dir
 OPENCLAW_WORKSPACE_DIR=$workspace_dir
 OPENCLAW_GATEWAY_PORT=$gateway_port
+OPENCLAW_GATEWAY_LISTEN_PORT=$gateway_listen_port
 OPENCLAW_BRIDGE_PORT=$bridge_port
 OPENCLAW_EXPOSE_BRIDGE_PORT=$expose_bridge
 OPENCLAW_GATEWAY_BIND=$bind
@@ -530,6 +538,7 @@ EOF
   echo "  image: $image"
   echo "  network mode: $network_mode"
   echo "  gateway port: $gateway_port"
+  echo "  gateway listen port: $gateway_listen_port"
   if [[ "$expose_bridge" == "1" ]]; then
     echo "  bridge port: $bridge_port"
   else
@@ -863,7 +872,7 @@ cmd_list() {
     found=true
     name="$(basename "$file" .env)"
     printf '%s\n' "[$name]"
-    grep_file_lines '^(OPENCLAW_IMAGE|OPENCLAW_GATEWAY_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR)=' "$file" \
+    grep_file_lines '^(OPENCLAW_IMAGE|OPENCLAW_GATEWAY_PORT|OPENCLAW_GATEWAY_LISTEN_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR)=' "$file" \
       | sed 's/^[0-9]\+://'
     grep_file_lines '^(OPENCLAW_EXPOSE_BRIDGE_PORT|OPENCLAW_DOCKER_NETWORK_MODE|OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
       | sed 's/^[0-9]\+://'
