@@ -88,7 +88,7 @@ Usage:
   ./docker-instance-manager.sh down <name>
   ./docker-instance-manager.sh restart <name>
   ./docker-instance-manager.sh status [name]
-  ./docker-instance-manager.sh logs <name> [-f]
+  ./docker-instance-manager.sh logs <name> [-f] [--verbose]
   ./docker-instance-manager.sh onboard <name>
   ./docker-instance-manager.sh cli <name> -- <openclaw-cli args...>
   ./docker-instance-manager.sh devices <name> -- <devices args...>
@@ -112,6 +112,10 @@ Create options:
 
 Global options:
   --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
+
+Logs options:
+  -f, --follow               Follow log output
+  --verbose                  Show instance metadata and logs for all services
 
 Plugin install options:
   --link                     Link local plugin path instead of copying
@@ -517,7 +521,41 @@ cmd_logs() {
   local instance="$1"
   shift
   ensure_instance_exists "$instance"
-  run_compose "$instance" logs "$@" openclaw-gateway
+  local env_file verbose image gateway_port bridge_port bind_mode
+  local -a log_args
+
+  verbose=false
+  log_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --verbose)
+        verbose=true
+        shift
+        ;;
+      *)
+        log_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ "$verbose" == true ]]; then
+    env_file="$(instance_env_file "$instance")"
+    image="$(read_instance_env_value "$env_file" "OPENCLAW_IMAGE")"
+    gateway_port="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_PORT")"
+    bridge_port="$(read_instance_env_value "$env_file" "OPENCLAW_BRIDGE_PORT")"
+    bind_mode="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_BIND")"
+    echo "Instance: $instance"
+    echo "  image: ${image:-unknown}"
+    echo "  bind: ${bind_mode:-unknown}"
+    echo "  gateway port: ${gateway_port:-unknown}"
+    echo "  bridge port: ${bridge_port:-disabled}"
+    run_compose "$instance" ps
+    run_compose "$instance" logs "${log_args[@]}"
+    return
+  fi
+
+  run_compose "$instance" logs "${log_args[@]}" openclaw-gateway
 }
 
 cmd_onboard() {
@@ -797,7 +835,7 @@ main() {
       cmd_status "$@"
       ;;
     logs)
-      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh logs <name> [-f]" >&2; exit 1; }
+      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh logs <name> [-f] [--verbose]" >&2; exit 1; }
       cmd_logs "$@"
       ;;
     onboard)
