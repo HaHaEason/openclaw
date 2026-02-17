@@ -63,7 +63,9 @@ Usage:
 
 Create options:
   --gateway-port <port>      Host port for gateway (container 18789)
-  --bridge-port <port>       Host port for bridge (container 18790)
+  --bridge-port <port>       Host port for bridge (container 18790, implies expose)
+  --expose-bridge-port       Expose bridge port mapping (default: off)
+  --no-bridge-port           Force disable bridge port mapping
   --config-dir <dir>         Host config directory (default: ~/.openclaw/instances/<name>/config)
   --workspace-dir <dir>      Host workspace directory (default: ~/.openclaw/instances/<name>/workspace)
   --image <image>            Docker image (default: openclaw:local)
@@ -156,47 +158,59 @@ next_available_port() {
 
 write_extra_compose() {
   local file="$1"
-  local home_volume="$2"
-  local config_dir="$3"
-  local workspace_dir="$4"
-  shift 4
+  local expose_bridge="$2"
+  local home_volume="$3"
+  local config_dir="$4"
+  local workspace_dir="$5"
+  shift 5
 
-  if [[ -z "$home_volume" && "$#" -eq 0 ]]; then
-    rm -f "$file"
-    return
+  local has_extra_volumes=false
+  if [[ -n "$home_volume" || "$#" -gt 0 ]]; then
+    has_extra_volumes=true
   fi
 
   cat >"$file" <<'YAML'
 services:
   openclaw-gateway:
-    volumes:
+    ports:
+      - ${OPENCLAW_GATEWAY_PORT:-18789}:18789
 YAML
 
-  if [[ -n "$home_volume" ]]; then
-    printf '      - %s:/home/node\n' "$home_volume" >>"$file"
-    printf '      - %s:/home/node/.openclaw\n' "$config_dir" >>"$file"
-    printf '      - %s:/home/node/.openclaw/workspace\n' "$workspace_dir" >>"$file"
+  if [[ "$expose_bridge" == "1" ]]; then
+    cat >>"$file" <<'YAML'
+      - ${OPENCLAW_BRIDGE_PORT:-18790}:18790
+YAML
   fi
 
-  local mount
-  for mount in "$@"; do
-    printf '      - %s\n' "$mount" >>"$file"
-  done
+  if [[ "$has_extra_volumes" == true ]]; then
+    cat >>"$file" <<'YAML'
+    volumes:
+YAML
+    if [[ -n "$home_volume" ]]; then
+      printf '      - %s:/home/node\n' "$home_volume" >>"$file"
+      printf '      - %s:/home/node/.openclaw\n' "$config_dir" >>"$file"
+      printf '      - %s:/home/node/.openclaw/workspace\n' "$workspace_dir" >>"$file"
+    fi
 
-  cat >>"$file" <<'YAML'
+    local mount
+    for mount in "$@"; do
+      printf '      - %s\n' "$mount" >>"$file"
+    done
+
+    cat >>"$file" <<'YAML'
   openclaw-cli:
     volumes:
 YAML
+    if [[ -n "$home_volume" ]]; then
+      printf '      - %s:/home/node\n' "$home_volume" >>"$file"
+      printf '      - %s:/home/node/.openclaw\n' "$config_dir" >>"$file"
+      printf '      - %s:/home/node/.openclaw/workspace\n' "$workspace_dir" >>"$file"
+    fi
 
-  if [[ -n "$home_volume" ]]; then
-    printf '      - %s:/home/node\n' "$home_volume" >>"$file"
-    printf '      - %s:/home/node/.openclaw\n' "$config_dir" >>"$file"
-    printf '      - %s:/home/node/.openclaw/workspace\n' "$workspace_dir" >>"$file"
+    for mount in "$@"; do
+      printf '      - %s\n' "$mount" >>"$file"
+    done
   fi
-
-  for mount in "$@"; do
-    printf '      - %s\n' "$mount" >>"$file"
-  done
 
   if [[ -n "$home_volume" && "$home_volume" != *"/"* ]]; then
     cat >>"$file" <<YAML
@@ -276,7 +290,7 @@ cmd_create() {
   local env_file compose_file
   local gateway_port bridge_port
   local config_dir workspace_dir
-  local image bind token apt_packages home_volume
+  local image bind token apt_packages home_volume expose_bridge
   local -a extra_mounts
 
   env_file="$(instance_env_file "$instance")"
@@ -290,6 +304,7 @@ cmd_create() {
   token="${OPENCLAW_GATEWAY_TOKEN:-}"
   apt_packages="${OPENCLAW_DOCKER_APT_PACKAGES:-}"
   home_volume="${OPENCLAW_HOME_VOLUME:-}"
+  expose_bridge="${OPENCLAW_EXPOSE_BRIDGE_PORT:-0}"
   extra_mounts=()
 
   while [[ $# -gt 0 ]]; do
@@ -300,7 +315,16 @@ cmd_create() {
         ;;
       --bridge-port)
         bridge_port="$2"
+        expose_bridge="1"
         shift 2
+        ;;
+      --expose-bridge-port)
+        expose_bridge="1"
+        shift
+        ;;
+      --no-bridge-port)
+        expose_bridge="0"
+        shift
         ;;
       --config-dir)
         config_dir="$2"
@@ -344,11 +368,15 @@ cmd_create() {
   if [[ -z "$gateway_port" ]]; then
     gateway_port="$(next_available_port 18789)"
   fi
-  if [[ -z "$bridge_port" ]]; then
-    bridge_port="$(next_available_port "$((gateway_port + 1))")"
-    if [[ "$bridge_port" == "$gateway_port" ]]; then
-      bridge_port="$(next_available_port "$((bridge_port + 1))")"
+  if [[ "$expose_bridge" == "1" ]]; then
+    if [[ -z "$bridge_port" ]]; then
+      bridge_port="$(next_available_port "$((gateway_port + 1))")"
+      if [[ "$bridge_port" == "$gateway_port" ]]; then
+        bridge_port="$(next_available_port "$((bridge_port + 1))")"
+      fi
     fi
+  else
+    bridge_port=""
   fi
   if [[ -z "$token" ]]; then
     token="$(generate_token)"
@@ -361,6 +389,7 @@ OPENCLAW_CONFIG_DIR=$config_dir
 OPENCLAW_WORKSPACE_DIR=$workspace_dir
 OPENCLAW_GATEWAY_PORT=$gateway_port
 OPENCLAW_BRIDGE_PORT=$bridge_port
+OPENCLAW_EXPOSE_BRIDGE_PORT=$expose_bridge
 OPENCLAW_GATEWAY_BIND=$bind
 OPENCLAW_GATEWAY_TOKEN=$token
 OPENCLAW_IMAGE=$image
@@ -369,13 +398,23 @@ OPENCLAW_HOME_VOLUME=$home_volume
 OPENCLAW_EXTRA_MOUNTS=$(IFS=,; echo "${extra_mounts[*]}")
 EOF
 
-  write_extra_compose "$compose_file" "$home_volume" "$config_dir" "$workspace_dir" "${extra_mounts[@]}"
+  write_extra_compose \
+    "$compose_file" \
+    "$expose_bridge" \
+    "$home_volume" \
+    "$config_dir" \
+    "$workspace_dir" \
+    "${extra_mounts[@]}"
 
   echo "Instance '$instance' created."
   echo "  env file: $env_file"
   echo "  image: $image"
   echo "  gateway port: $gateway_port"
-  echo "  bridge port: $bridge_port"
+  if [[ "$expose_bridge" == "1" ]]; then
+    echo "  bridge port: $bridge_port"
+  else
+    echo "  bridge port: disabled"
+  fi
   echo "  config dir: $config_dir"
   echo "  workspace dir: $workspace_dir"
   if [[ -n "$home_volume" ]]; then
@@ -463,7 +502,7 @@ cmd_list() {
     printf '%s\n' "[$name]"
     grep_file_lines '^(OPENCLAW_IMAGE|OPENCLAW_GATEWAY_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR)=' "$file" \
       | sed 's/^[0-9]\+://'
-    grep_file_lines '^(OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
+    grep_file_lines '^(OPENCLAW_EXPOSE_BRIDGE_PORT|OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
       | sed 's/^[0-9]\+://'
     echo ""
   done
