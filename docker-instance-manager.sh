@@ -644,6 +644,25 @@ const data = JSON.parse(raw);
 if (!data || Array.isArray(data) || typeof data !== "object") {
   throw new Error("--set-json file must be a JSON object: {\"config.path\": value}");
 }
+for (const [k, v] of Object.entries(data)) {
+  if (!k || !k.trim()) continue;
+  process.stdout.write(`${k}\t${JSON.stringify(v)}\n`);
+}
+' "$set_json_file"
+    )
+    for line in "${json_pairs[@]}"; do
+      key="${line%%$'\t'*}"
+      json_value="${line#*$'\t'}"
+      echo "==> Applying JSON config: $key <- $set_json_file"
+      run_compose "$instance" run --rm openclaw-cli config set "$key" "$json_value" --json
+    done
+  fi
+
+  if [[ "$restart" == true ]]; then
+    echo "==> Restarting gateway for instance '$instance'"
+    run_compose "$instance" restart openclaw-gateway
+  fi
+}
 
 cmd_plugin_uninstall() {
   ensure_docker_ready
@@ -703,25 +722,6 @@ cmd_plugin_uninstall() {
   run_compose "$instance" run --rm openclaw-cli "${uninstall_args[@]}"
 
   if [[ "$restart" == true && "$dry_run" == false ]]; then
-    echo "==> Restarting gateway for instance '$instance'"
-    run_compose "$instance" restart openclaw-gateway
-  fi
-}
-for (const [k, v] of Object.entries(data)) {
-  if (!k || !k.trim()) continue;
-  process.stdout.write(`${k}\t${JSON.stringify(v)}\n`);
-}
-' "$set_json_file"
-    )
-    for line in "${json_pairs[@]}"; do
-      key="${line%%$'\t'*}"
-      json_value="${line#*$'\t'}"
-      echo "==> Applying JSON config: $key <- $set_json_file"
-      run_compose "$instance" run --rm openclaw-cli config set "$key" "$json_value" --json
-    done
-  fi
-
-  if [[ "$restart" == true ]]; then
     echo "==> Restarting gateway for instance '$instance'"
     run_compose "$instance" restart openclaw-gateway
   fi
