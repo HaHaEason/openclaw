@@ -59,6 +59,7 @@ Usage:
   ./docker-instance-manager.sh logs <name> [-f]
   ./docker-instance-manager.sh onboard <name>
   ./docker-instance-manager.sh cli <name> -- <openclaw-cli args...>
+  ./docker-instance-manager.sh devices <name> -- <devices args...>
   ./docker-instance-manager.sh list
 
 Create options:
@@ -83,6 +84,7 @@ Examples:
   ./docker-instance-manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
   ./docker-instance-manager.sh up prod-a
   ./docker-instance-manager.sh cli prod-a -- channels status --probe
+  ./docker-instance-manager.sh devices prod-a -- list
 EOF
 }
 
@@ -492,6 +494,23 @@ cmd_cli() {
   run_compose "$instance" run --rm openclaw-cli "$@"
 }
 
+cmd_devices() {
+  ensure_docker_ready
+  local instance="$1"
+  shift
+  ensure_instance_exists "$instance"
+  if [[ $# -gt 0 && "$1" == "--" ]]; then
+    shift
+  fi
+  if [[ $# -eq 0 ]]; then
+    echo "Missing devices args. Example: ./docker-instance-manager.sh devices <name> -- list" >&2
+    exit 1
+  fi
+  # Run against the running gateway container to avoid loopback resolution issues
+  # from one-shot CLI containers.
+  run_compose "$instance" exec openclaw-gateway node dist/index.js devices "$@"
+}
+
 cmd_list() {
   local file name
   local found=false
@@ -572,6 +591,10 @@ main() {
     cli)
       [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh cli <name> -- <args...>" >&2; exit 1; }
       cmd_cli "$@"
+      ;;
+    devices)
+      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh devices <name> -- <args...>" >&2; exit 1; }
+      cmd_devices "$@"
       ;;
     list)
       [[ $# -eq 0 ]] || { echo "Usage: ./docker-instance-manager.sh list" >&2; exit 1; }
