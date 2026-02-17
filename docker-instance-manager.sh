@@ -93,6 +93,7 @@ Usage:
   ./docker-instance-manager.sh cli <name> -- <openclaw-cli args...>
   ./docker-instance-manager.sh devices <name> -- <devices args...>
   ./docker-instance-manager.sh plugin-install <name> <path-or-spec> [options]
+  ./docker-instance-manager.sh plugin-uninstall <name> <plugin-id> [options]
   ./docker-instance-manager.sh list
 
 Create options:
@@ -118,6 +119,12 @@ Plugin install options:
                              openclaw config set <key> '<json-value>' --json
   --restart                  Restart gateway after install/config
 
+Plugin uninstall options:
+  --keep-files               Keep installed files on disk
+  --dry-run                  Preview removal only
+  --no-force                 Ask for confirmation (default: force)
+  --restart                  Restart gateway after uninstall
+
 Examples:
   ./docker-instance-manager.sh build --image openclaw:v2026.2.15
   ./docker-instance-manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
@@ -125,6 +132,7 @@ Examples:
   ./docker-instance-manager.sh cli prod-a -- channels status --probe
   ./docker-instance-manager.sh devices prod-a -- list
   ./docker-instance-manager.sh plugin-install prod-a @openclaw/zalo --set-json ./plugin-config.json --restart
+  ./docker-instance-manager.sh plugin-uninstall prod-a zalo --restart
 EOF
 }
 
@@ -636,6 +644,69 @@ const data = JSON.parse(raw);
 if (!data || Array.isArray(data) || typeof data !== "object") {
   throw new Error("--set-json file must be a JSON object: {\"config.path\": value}");
 }
+
+cmd_plugin_uninstall() {
+  ensure_docker_ready
+  if [[ $# -lt 2 ]]; then
+    echo "Usage: ./docker-instance-manager.sh plugin-uninstall <name> <plugin-id> [--keep-files] [--dry-run] [--no-force] [--restart]" >&2
+    exit 1
+  fi
+
+  local instance="$1"
+  local plugin_id="$2"
+  local keep_files=false
+  local dry_run=false
+  local force=true
+  local restart=false
+  local -a uninstall_args
+  shift 2
+
+  ensure_instance_exists "$instance"
+  uninstall_args=(plugins uninstall "$plugin_id")
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep-files)
+        keep_files=true
+        shift
+        ;;
+      --dry-run)
+        dry_run=true
+        shift
+        ;;
+      --no-force)
+        force=false
+        shift
+        ;;
+      --restart)
+        restart=true
+        shift
+        ;;
+      *)
+        echo "Unknown option for plugin-uninstall: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ "$keep_files" == true ]]; then
+    uninstall_args+=(--keep-files)
+  fi
+  if [[ "$dry_run" == true ]]; then
+    uninstall_args+=(--dry-run)
+  fi
+  if [[ "$force" == true ]]; then
+    uninstall_args+=(--force)
+  fi
+
+  echo "==> Uninstalling plugin '$plugin_id' for instance '$instance'"
+  run_compose "$instance" run --rm openclaw-cli "${uninstall_args[@]}"
+
+  if [[ "$restart" == true && "$dry_run" == false ]]; then
+    echo "==> Restarting gateway for instance '$instance'"
+    run_compose "$instance" restart openclaw-gateway
+  fi
+}
 for (const [k, v] of Object.entries(data)) {
   if (!k || !k.trim()) continue;
   process.stdout.write(`${k}\t${JSON.stringify(v)}\n`);
@@ -747,6 +818,13 @@ main() {
         exit 1
       }
       cmd_plugin_install "$@"
+      ;;
+    plugin-uninstall)
+      [[ $# -ge 2 ]] || {
+        echo "Usage: ./docker-instance-manager.sh plugin-uninstall <name> <plugin-id> [--keep-files] [--dry-run] [--no-force] [--restart]" >&2
+        exit 1
+      }
+      cmd_plugin_uninstall "$@"
       ;;
     list)
       [[ $# -eq 0 ]] || { echo "Usage: ./docker-instance-manager.sh list" >&2; exit 1; }
