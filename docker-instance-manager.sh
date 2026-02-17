@@ -92,6 +92,7 @@ Usage:
   ./docker-instance-manager.sh onboard <name>
   ./docker-instance-manager.sh cli <name> -- <openclaw-cli args...>
   ./docker-instance-manager.sh devices <name> -- <devices args...>
+  ./docker-instance-manager.sh plugin-install <name> <path-or-spec> [options]
   ./docker-instance-manager.sh list
 
 Create options:
@@ -111,12 +112,19 @@ Create options:
 Global options:
   --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
 
+Plugin install options:
+  --link                     Link local plugin path instead of copying
+  --set-json <file>          Apply JSON file entries via:
+                             openclaw config set <key> '<json-value>' --json
+  --restart                  Restart gateway after install/config
+
 Examples:
   ./docker-instance-manager.sh build --image openclaw:v2026.2.15
   ./docker-instance-manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
   ./docker-instance-manager.sh up prod-a
   ./docker-instance-manager.sh cli prod-a -- channels status --probe
   ./docker-instance-manager.sh devices prod-a -- list
+  ./docker-instance-manager.sh plugin-install prod-a @openclaw/zalo --set-json ./plugin-config.json --restart
 EOF
 }
 
@@ -562,6 +570,92 @@ cmd_devices() {
   run_compose "$instance" exec openclaw-gateway node dist/index.js devices "${device_args[@]}"
 }
 
+cmd_plugin_install() {
+  ensure_docker_ready
+  if [[ $# -lt 2 ]]; then
+    echo "Usage: ./docker-instance-manager.sh plugin-install <name> <path-or-spec> [--link] [--set-json <file>] [--restart]" >&2
+    exit 1
+  fi
+
+  local instance="$1"
+  local plugin_spec="$2"
+  local link=false
+  local restart=false
+  local set_json_file=""
+  local key json_value line
+  local -a json_pairs
+  shift 2
+
+  ensure_instance_exists "$instance"
+  json_pairs=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --link)
+        link=true
+        shift
+        ;;
+      --set-json)
+        [[ $# -ge 2 ]] || { echo "Missing value for --set-json (expected: <file>)" >&2; exit 1; }
+        set_json_file="$2"
+        if [[ ! -f "$set_json_file" ]]; then
+          echo "JSON file not found: $set_json_file" >&2
+          exit 1
+        fi
+        shift 2
+        ;;
+      --restart)
+        restart=true
+        shift
+        ;;
+      *)
+        echo "Unknown option for plugin-install: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  echo "==> Installing plugin '$plugin_spec' for instance '$instance'"
+  if [[ "$link" == true ]]; then
+    run_compose "$instance" run --rm openclaw-cli plugins install --link "$plugin_spec"
+  else
+    run_compose "$instance" run --rm openclaw-cli plugins install "$plugin_spec"
+  fi
+
+  if [[ -n "$set_json_file" ]]; then
+    if ! has_cmd node; then
+      echo "Missing dependency: node (needed to parse --set-json file)" >&2
+      exit 1
+    fi
+    mapfile -t json_pairs < <(
+      node -e '
+const fs = require("fs");
+const file = process.argv[1];
+const raw = fs.readFileSync(file, "utf8");
+const data = JSON.parse(raw);
+if (!data || Array.isArray(data) || typeof data !== "object") {
+  throw new Error("--set-json file must be a JSON object: {\"config.path\": value}");
+}
+for (const [k, v] of Object.entries(data)) {
+  if (!k || !k.trim()) continue;
+  process.stdout.write(`${k}\t${JSON.stringify(v)}\n`);
+}
+' "$set_json_file"
+    )
+    for line in "${json_pairs[@]}"; do
+      key="${line%%$'\t'*}"
+      json_value="${line#*$'\t'}"
+      echo "==> Applying JSON config: $key <- $set_json_file"
+      run_compose "$instance" run --rm openclaw-cli config set "$key" "$json_value" --json
+    done
+  fi
+
+  if [[ "$restart" == true ]]; then
+    echo "==> Restarting gateway for instance '$instance'"
+    run_compose "$instance" restart openclaw-gateway
+  fi
+}
+
 cmd_list() {
   local file name
   local found=false
@@ -646,6 +740,13 @@ main() {
     devices)
       [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh devices <name> -- <args...>" >&2; exit 1; }
       cmd_devices "$@"
+      ;;
+    plugin-install)
+      [[ $# -ge 2 ]] || {
+        echo "Usage: ./docker-instance-manager.sh plugin-install <name> <path-or-spec> [--link] [--set-json <file>] [--restart]" >&2
+        exit 1
+      }
+      cmd_plugin_install "$@"
       ;;
     list)
       [[ $# -eq 0 ]] || { echo "Usage: ./docker-instance-manager.sh list" >&2; exit 1; }
