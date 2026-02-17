@@ -110,9 +110,10 @@ Create options:
   --apt-packages "<pkgs>"    Stored for optional build convenience
   --mount <host:container>   Extra mount, repeatable
   --verbose                  Default gateway verbose mode for this instance (stored)
-  --http-proxy <url>         HTTP proxy URL (default: http://host.docker.internal:10871)
+  --http-proxy <url>         HTTP proxy URL (default: http://127.0.0.1:10871)
   --https-proxy <url>        HTTPS proxy URL (default: same as --http-proxy)
   --no-proxy <csv>           NO_PROXY value (default: localhost,127.0.0.1,::1,host.docker.internal)
+  --network-mode <mode>      Docker network mode: bridge|host (default: host)
 
 Global options:
   --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
@@ -136,6 +137,7 @@ Plugin uninstall options:
 Examples:
   ./docker-instance-manager.sh build --image openclaw:v2026.2.15
   ./docker-instance-manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
+  ./docker-instance-manager.sh create prod-a --network-mode host
   ./docker-instance-manager.sh up prod-a --verbose
   ./docker-instance-manager.sh cli prod-a -- channels status --probe
   ./docker-instance-manager.sh devices prod-a -- list
@@ -220,7 +222,8 @@ write_extra_compose() {
   local home_volume="$3"
   local config_dir="$4"
   local workspace_dir="$5"
-  shift 5
+  local network_mode="$6"
+  shift 6
 
   local has_extra_volumes=false
   if [[ -n "$home_volume" || "$#" -gt 0 ]]; then
@@ -230,14 +233,23 @@ write_extra_compose() {
   cat >"$file" <<'YAML'
 services:
   openclaw-gateway:
+YAML
+
+  if [[ "$network_mode" == "host" ]]; then
+    cat >>"$file" <<'YAML'
+    network_mode: host
+    ports: []
+YAML
+  else
+    cat >>"$file" <<'YAML'
     ports:
       - ${OPENCLAW_GATEWAY_PORT:-18789}:18789
 YAML
-
-  if [[ "$expose_bridge" == "1" ]]; then
-    cat >>"$file" <<'YAML'
+    if [[ "$expose_bridge" == "1" ]]; then
+      cat >>"$file" <<'YAML'
       - ${OPENCLAW_BRIDGE_PORT:-18790}:18790
 YAML
+    fi
   fi
 
   if [[ "$has_extra_volumes" == true ]]; then
@@ -268,6 +280,13 @@ YAML
     for mount in "$@"; do
       printf '      - %s\n' "$mount" >>"$file"
     done
+  fi
+
+  if [[ "$network_mode" == "host" ]]; then
+    cat >>"$file" <<'YAML'
+  openclaw-cli:
+    network_mode: host
+YAML
   fi
 
   if [[ -n "$home_volume" && "$home_volume" != *"/"* ]]; then
@@ -348,7 +367,7 @@ cmd_create() {
   local env_file compose_file
   local gateway_port bridge_port
   local config_dir workspace_dir
-  local image bind token apt_packages home_volume expose_bridge gateway_verbose
+  local image bind token apt_packages home_volume expose_bridge gateway_verbose network_mode
   local http_proxy https_proxy no_proxy
   local -a extra_mounts
 
@@ -365,7 +384,8 @@ cmd_create() {
   home_volume="${OPENCLAW_HOME_VOLUME:-}"
   expose_bridge="${OPENCLAW_EXPOSE_BRIDGE_PORT:-0}"
   gateway_verbose="${OPENCLAW_GATEWAY_VERBOSE:-}"
-  http_proxy="${OPENCLAW_HTTP_PROXY:-http://host.docker.internal:10871}"
+  network_mode="${OPENCLAW_DOCKER_NETWORK_MODE:-host}"
+  http_proxy="${OPENCLAW_HTTP_PROXY:-http://127.0.0.1:10871}"
   https_proxy="${OPENCLAW_HTTPS_PROXY:-$http_proxy}"
   no_proxy="${OPENCLAW_NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal}"
   extra_mounts=()
@@ -437,12 +457,21 @@ cmd_create() {
         no_proxy="$2"
         shift 2
         ;;
+      --network-mode)
+        network_mode="$2"
+        shift 2
+        ;;
       *)
         echo "Unknown option for create: $1" >&2
         exit 1
         ;;
     esac
   done
+
+  if [[ "$network_mode" != "bridge" && "$network_mode" != "host" ]]; then
+    echo "Invalid --network-mode: $network_mode (allowed: bridge|host)" >&2
+    exit 1
+  fi
 
   if [[ -z "$gateway_port" ]]; then
     gateway_port="$(next_available_port 18789)"
@@ -479,6 +508,7 @@ OPENCLAW_EXTRA_MOUNTS=$(IFS=,; echo "${extra_mounts[*]}")
 OPENCLAW_HTTP_PROXY=$http_proxy
 OPENCLAW_HTTPS_PROXY=$https_proxy
 OPENCLAW_NO_PROXY=$no_proxy
+OPENCLAW_DOCKER_NETWORK_MODE=$network_mode
 EOF
 
   write_extra_compose \
@@ -487,11 +517,13 @@ EOF
     "$home_volume" \
     "$config_dir" \
     "$workspace_dir" \
+    "$network_mode" \
     "${extra_mounts[@]}"
 
   echo "Instance '$instance' created."
   echo "  env file: $env_file"
   echo "  image: $image"
+  echo "  network mode: $network_mode"
   echo "  gateway port: $gateway_port"
   if [[ "$expose_bridge" == "1" ]]; then
     echo "  bridge port: $bridge_port"
@@ -828,7 +860,7 @@ cmd_list() {
     printf '%s\n' "[$name]"
     grep_file_lines '^(OPENCLAW_IMAGE|OPENCLAW_GATEWAY_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR)=' "$file" \
       | sed 's/^[0-9]\+://'
-    grep_file_lines '^(OPENCLAW_EXPOSE_BRIDGE_PORT|OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
+    grep_file_lines '^(OPENCLAW_EXPOSE_BRIDGE_PORT|OPENCLAW_DOCKER_NETWORK_MODE|OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
       | sed 's/^[0-9]\+://'
     echo ""
   done
