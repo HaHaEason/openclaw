@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
+STATE_DIR="${OPENCLAW_INSTANCES_DIR:-$ROOT_DIR/.docker-instances}"
+DEFAULT_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
+DEFAULT_BIND="${OPENCLAW_GATEWAY_BIND:-lan}"
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing dependency: $1" >&2
+    exit 1
+  fi
+}
+
+mkdir -p "$STATE_DIR"
+
+ensure_docker_ready() {
+  require_cmd docker
+  if ! docker compose version >/dev/null 2>&1; then
+    echo "Docker Compose not available (try: docker compose version)" >&2
+    exit 1
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./docker-instance-manager.sh build [--image <image>] [--apt-packages "<pkg1 pkg2>"]
+  ./docker-instance-manager.sh create <name> [options]
+  ./docker-instance-manager.sh up <name>
+  ./docker-instance-manager.sh down <name>
+  ./docker-instance-manager.sh restart <name>
+  ./docker-instance-manager.sh status [name]
+  ./docker-instance-manager.sh logs <name> [-f]
+  ./docker-instance-manager.sh onboard <name>
+  ./docker-instance-manager.sh cli <name> -- <openclaw-cli args...>
+  ./docker-instance-manager.sh list
+
+Create options:
+  --gateway-port <port>      Host port for gateway (container 18789)
+  --bridge-port <port>       Host port for bridge (container 18790)
+  --config-dir <dir>         Host config directory (default: ~/.openclaw/instances/<name>/config)
+  --workspace-dir <dir>      Host workspace directory (default: ~/.openclaw/instances/<name>/workspace)
+  --image <image>            Docker image (default: openclaw:local)
+  --bind <lan|loopback>      Gateway bind mode (default: lan)
+  --token <token>            Gateway token (default: auto generated)
+  --home-volume <name|path>  Mount to /home/node (named volume or host path)
+  --apt-packages "<pkgs>"    Stored for optional build convenience
+  --mount <host:container>   Extra mount, repeatable
+
+Examples:
+  ./docker-instance-manager.sh build --image openclaw:v2026.2.15
+  ./docker-instance-manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
+  ./docker-instance-manager.sh up prod-a
+  ./docker-instance-manager.sh cli prod-a -- channels status --probe
+EOF
+}
+
+instance_env_file() {
+  echo "$STATE_DIR/$1.env"
+}
+
+instance_compose_file() {
+  echo "$STATE_DIR/$1.compose.yml"
+}
+
+instance_project_name() {
+  echo "openclaw-$1"
+}
+
+validate_instance_name() {
+  local name="$1"
+  if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "Invalid instance name: $name (allowed: letters, numbers, ., _, -)" >&2
+    exit 1
+  fi
+}
+
+generate_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import secrets
+print(secrets.token_hex(32))
+PY
+    return
+  fi
+  echo "Missing dependency: openssl or python3 (needed to generate token)" >&2
+  exit 1
+}
+
+is_port_reserved() {
+  local port="$1"
+  local file
+  for file in "$STATE_DIR"/*.env; do
+    [[ -e "$file" ]] || continue
+    if rg -q "^OPENCLAW_GATEWAY_PORT=${port}$|^OPENCLAW_BRIDGE_PORT=${port}$" "$file"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_port_in_use() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "( sport = :$port )" 2>/dev/null | awk 'NR>1{found=1} END{exit !found}'
+    return $?
+  fi
+  return 1
+}
+
+next_available_port() {
+  local start="$1"
+  local port="$start"
+  while is_port_reserved "$port" || is_port_in_use "$port"; do
+    port=$((port + 1))
+  done
+  echo "$port"
+}
+
+write_extra_compose() {
+  local file="$1"
+  local home_volume="$2"
+  local config_dir="$3"
+  local workspace_dir="$4"
+  shift 4
+
+  if [[ -z "$home_volume" && "$#" -eq 0 ]]; then
+    rm -f "$file"
+    return
+  fi
+
+  cat >"$file" <<'YAML'
+services:
+  openclaw-gateway:
+    volumes:
+YAML
+
+  if [[ -n "$home_volume" ]]; then
+    printf '      - %s:/home/node\n' "$home_volume" >>"$file"
+    printf '      - %s:/home/node/.openclaw\n' "$config_dir" >>"$file"
+    printf '      - %s:/home/node/.openclaw/workspace\n' "$workspace_dir" >>"$file"
+  fi
+
+  local mount
+  for mount in "$@"; do
+    printf '      - %s\n' "$mount" >>"$file"
+  done
+
+  cat >>"$file" <<'YAML'
+  openclaw-cli:
+    volumes:
+YAML
+
+  if [[ -n "$home_volume" ]]; then
+    printf '      - %s:/home/node\n' "$home_volume" >>"$file"
+    printf '      - %s:/home/node/.openclaw\n' "$config_dir" >>"$file"
+    printf '      - %s:/home/node/.openclaw/workspace\n' "$workspace_dir" >>"$file"
+  fi
+
+  for mount in "$@"; do
+    printf '      - %s\n' "$mount" >>"$file"
+  done
+
+  if [[ -n "$home_volume" && "$home_volume" != *"/"* ]]; then
+    cat >>"$file" <<YAML
+volumes:
+  ${home_volume}:
+YAML
+  fi
+}
+
+run_compose() {
+  local instance="$1"
+  shift
+
+  local env_file compose_file
+  local -a args
+  env_file="$(instance_env_file "$instance")"
+  compose_file="$(instance_compose_file "$instance")"
+  args=(--env-file "$env_file" -p "$(instance_project_name "$instance")" -f "$BASE_COMPOSE_FILE")
+  if [[ -f "$compose_file" ]]; then
+    args+=(-f "$compose_file")
+  fi
+  docker compose "${args[@]}" "$@"
+}
+
+ensure_instance_exists() {
+  local instance="$1"
+  local env_file
+  env_file="$(instance_env_file "$instance")"
+  if [[ ! -f "$env_file" ]]; then
+    echo "Instance '$instance' not found. Run: ./docker-instance-manager.sh create $instance" >&2
+    exit 1
+  fi
+}
+
+cmd_build() {
+  ensure_docker_ready
+  local image="$DEFAULT_IMAGE"
+  local apt_packages="${OPENCLAW_DOCKER_APT_PACKAGES:-}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --image)
+        image="$2"
+        shift 2
+        ;;
+      --apt-packages)
+        apt_packages="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown option for build: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  echo "==> Building image: $image"
+  docker build \
+    --build-arg "OPENCLAW_DOCKER_APT_PACKAGES=$apt_packages" \
+    -t "$image" \
+    -f "$ROOT_DIR/Dockerfile" \
+    "$ROOT_DIR"
+}
+
+cmd_create() {
+  if [[ $# -lt 1 ]]; then
+    echo "Missing instance name" >&2
+    usage
+    exit 1
+  fi
+
+  local instance="$1"
+  shift
+  validate_instance_name "$instance"
+
+  local env_file compose_file
+  local gateway_port bridge_port
+  local config_dir workspace_dir
+  local image bind token apt_packages home_volume
+  local -a extra_mounts
+
+  env_file="$(instance_env_file "$instance")"
+  compose_file="$(instance_compose_file "$instance")"
+  gateway_port=""
+  bridge_port=""
+  config_dir="$HOME/.openclaw/instances/$instance/config"
+  workspace_dir="$HOME/.openclaw/instances/$instance/workspace"
+  image="$DEFAULT_IMAGE"
+  bind="$DEFAULT_BIND"
+  token="${OPENCLAW_GATEWAY_TOKEN:-}"
+  apt_packages="${OPENCLAW_DOCKER_APT_PACKAGES:-}"
+  home_volume="${OPENCLAW_HOME_VOLUME:-}"
+  extra_mounts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --gateway-port)
+        gateway_port="$2"
+        shift 2
+        ;;
+      --bridge-port)
+        bridge_port="$2"
+        shift 2
+        ;;
+      --config-dir)
+        config_dir="$2"
+        shift 2
+        ;;
+      --workspace-dir)
+        workspace_dir="$2"
+        shift 2
+        ;;
+      --image)
+        image="$2"
+        shift 2
+        ;;
+      --bind)
+        bind="$2"
+        shift 2
+        ;;
+      --token)
+        token="$2"
+        shift 2
+        ;;
+      --home-volume)
+        home_volume="$2"
+        shift 2
+        ;;
+      --apt-packages)
+        apt_packages="$2"
+        shift 2
+        ;;
+      --mount)
+        extra_mounts+=("$2")
+        shift 2
+        ;;
+      *)
+        echo "Unknown option for create: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$gateway_port" ]]; then
+    gateway_port="$(next_available_port 18789)"
+  fi
+  if [[ -z "$bridge_port" ]]; then
+    bridge_port="$(next_available_port "$((gateway_port + 1))")"
+    if [[ "$bridge_port" == "$gateway_port" ]]; then
+      bridge_port="$(next_available_port "$((bridge_port + 1))")"
+    fi
+  fi
+  if [[ -z "$token" ]]; then
+    token="$(generate_token)"
+  fi
+
+  mkdir -p "$config_dir" "$workspace_dir"
+
+  cat >"$env_file" <<EOF
+OPENCLAW_CONFIG_DIR=$config_dir
+OPENCLAW_WORKSPACE_DIR=$workspace_dir
+OPENCLAW_GATEWAY_PORT=$gateway_port
+OPENCLAW_BRIDGE_PORT=$bridge_port
+OPENCLAW_GATEWAY_BIND=$bind
+OPENCLAW_GATEWAY_TOKEN=$token
+OPENCLAW_IMAGE=$image
+OPENCLAW_DOCKER_APT_PACKAGES=$apt_packages
+OPENCLAW_HOME_VOLUME=$home_volume
+OPENCLAW_EXTRA_MOUNTS=$(IFS=,; echo "${extra_mounts[*]}")
+EOF
+
+  write_extra_compose "$compose_file" "$home_volume" "$config_dir" "$workspace_dir" "${extra_mounts[@]}"
+
+  echo "Instance '$instance' created."
+  echo "  env file: $env_file"
+  echo "  image: $image"
+  echo "  gateway port: $gateway_port"
+  echo "  bridge port: $bridge_port"
+  echo "  config dir: $config_dir"
+  echo "  workspace dir: $workspace_dir"
+  if [[ -n "$home_volume" ]]; then
+    echo "  home volume: $home_volume"
+  fi
+  if [[ ${#extra_mounts[@]} -gt 0 ]]; then
+    echo "  extra mounts: $(IFS=', '; echo "${extra_mounts[*]}")"
+  fi
+  echo ""
+  echo "Next steps:"
+  echo "  ./docker-instance-manager.sh build --image $image --apt-packages \"$apt_packages\""
+  echo "  ./docker-instance-manager.sh onboard $instance"
+  echo "  ./docker-instance-manager.sh up $instance"
+}
+
+cmd_up() {
+  ensure_docker_ready
+  local instance="$1"
+  ensure_instance_exists "$instance"
+  run_compose "$instance" up -d openclaw-gateway
+}
+
+cmd_down() {
+  ensure_docker_ready
+  local instance="$1"
+  ensure_instance_exists "$instance"
+  run_compose "$instance" down
+}
+
+cmd_restart() {
+  ensure_docker_ready
+  local instance="$1"
+  ensure_instance_exists "$instance"
+  run_compose "$instance" restart openclaw-gateway
+}
+
+cmd_status() {
+  if [[ $# -eq 0 ]]; then
+    cmd_list
+    return
+  fi
+  ensure_docker_ready
+  local instance="$1"
+  ensure_instance_exists "$instance"
+  run_compose "$instance" ps
+}
+
+cmd_logs() {
+  ensure_docker_ready
+  local instance="$1"
+  shift
+  ensure_instance_exists "$instance"
+  run_compose "$instance" logs "$@" openclaw-gateway
+}
+
+cmd_onboard() {
+  ensure_docker_ready
+  local instance="$1"
+  ensure_instance_exists "$instance"
+  run_compose "$instance" run --rm openclaw-cli onboard --no-install-daemon
+}
+
+cmd_cli() {
+  ensure_docker_ready
+  local instance="$1"
+  shift
+  ensure_instance_exists "$instance"
+  if [[ $# -gt 0 && "$1" == "--" ]]; then
+    shift
+  fi
+  if [[ $# -eq 0 ]]; then
+    echo "Missing cli args. Example: ./docker-instance-manager.sh cli <name> -- channels status --probe" >&2
+    exit 1
+  fi
+  run_compose "$instance" run --rm openclaw-cli "$@"
+}
+
+cmd_list() {
+  local file name
+  local found=false
+  for file in "$STATE_DIR"/*.env; do
+    [[ -e "$file" ]] || continue
+    found=true
+    name="$(basename "$file" .env)"
+    printf '%s\n' "[$name]"
+    rg -n '^(OPENCLAW_IMAGE|OPENCLAW_GATEWAY_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_CONFIG_DIR|OPENCLAW_WORKSPACE_DIR)=' "$file" \
+      | sed 's/^[0-9]\+://'
+    rg -n '^(OPENCLAW_HOME_VOLUME|OPENCLAW_EXTRA_MOUNTS)=' "$file" \
+      | sed 's/^[0-9]\+://'
+    echo ""
+  done
+  if [[ "$found" == false ]]; then
+    echo "No instances yet. Run: ./docker-instance-manager.sh create <name>"
+  fi
+}
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+  fi
+
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    build)
+      cmd_build "$@"
+      ;;
+    create)
+      cmd_create "$@"
+      ;;
+    up)
+      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh up <name>" >&2; exit 1; }
+      cmd_up "$1"
+      ;;
+    down)
+      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh down <name>" >&2; exit 1; }
+      cmd_down "$1"
+      ;;
+    restart)
+      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh restart <name>" >&2; exit 1; }
+      cmd_restart "$1"
+      ;;
+    status)
+      [[ $# -le 1 ]] || { echo "Usage: ./docker-instance-manager.sh status [name]" >&2; exit 1; }
+      cmd_status "$@"
+      ;;
+    logs)
+      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh logs <name> [-f]" >&2; exit 1; }
+      cmd_logs "$@"
+      ;;
+    onboard)
+      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh onboard <name>" >&2; exit 1; }
+      cmd_onboard "$1"
+      ;;
+    cli)
+      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh cli <name> -- <args...>" >&2; exit 1; }
+      cmd_cli "$@"
+      ;;
+    list)
+      [[ $# -eq 0 ]] || { echo "Usage: ./docker-instance-manager.sh list" >&2; exit 1; }
+      cmd_list
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
