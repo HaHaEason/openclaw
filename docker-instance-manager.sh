@@ -699,6 +699,8 @@ cmd_onboard() {
 cmd_cli() {
   ensure_docker_ready
   local instance="$1"
+  local token listen_port
+  local -a run_args
   shift
   ensure_instance_exists "$instance"
   if [[ $# -gt 0 && "$1" == "--" ]]; then
@@ -708,7 +710,15 @@ cmd_cli() {
     echo "Missing cli args. Example: ./docker-instance-manager.sh cli <name> -- channels status --probe" >&2
     exit 1
   fi
-  run_compose "$instance" run --rm openclaw-cli "$@"
+
+  token="$(resolve_instance_gateway_token "$instance")"
+  listen_port="$(resolve_instance_gateway_listen_port "$instance")"
+  run_args=(run --rm -e "OPENCLAW_GATEWAY_PORT=${listen_port}")
+  if [[ -n "$token" ]]; then
+    run_args+=(-e "OPENCLAW_GATEWAY_TOKEN=${token}")
+  fi
+
+  run_compose "$instance" "${run_args[@]}" openclaw-cli "$@"
 }
 
 cmd_devices() {
