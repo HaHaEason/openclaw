@@ -70,6 +70,26 @@ resolve_instance_gateway_token() {
   printf '%s' "$token"
 }
 
+resolve_instance_gateway_listen_port() {
+  local instance="$1"
+  local env_file network_mode gateway_port listen_port
+
+  env_file="$(instance_env_file "$instance")"
+  network_mode="$(read_instance_env_value "$env_file" "OPENCLAW_DOCKER_NETWORK_MODE")"
+  gateway_port="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_PORT")"
+  listen_port="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_LISTEN_PORT")"
+
+  if [[ -n "$listen_port" ]]; then
+    printf '%s' "$listen_port"
+    return
+  fi
+  if [[ "$network_mode" == "host" && -n "$gateway_port" ]]; then
+    printf '%s' "$gateway_port"
+    return
+  fi
+  printf '%s' "18789"
+}
+
 ensure_docker_ready() {
   require_cmd docker
   if ! docker compose version >/dev/null 2>&1; then
@@ -567,9 +587,11 @@ EOF
 cmd_up() {
   ensure_docker_ready
   local instance="$1"
+  local listen_port
   local gateway_verbose=""
   shift
   ensure_instance_exists "$instance"
+  listen_port="$(resolve_instance_gateway_listen_port "$instance")"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --verbose)
@@ -584,10 +606,10 @@ cmd_up() {
   done
 
   if [[ -n "$gateway_verbose" ]]; then
-    OPENCLAW_GATEWAY_VERBOSE="$gateway_verbose" run_compose "$instance" up -d openclaw-gateway
+    OPENCLAW_GATEWAY_VERBOSE="$gateway_verbose" OPENCLAW_GATEWAY_LISTEN_PORT="$listen_port" run_compose "$instance" up -d openclaw-gateway
     return
   fi
-  run_compose "$instance" up -d openclaw-gateway
+  OPENCLAW_GATEWAY_LISTEN_PORT="$listen_port" run_compose "$instance" up -d openclaw-gateway
 }
 
 cmd_down() {
@@ -660,8 +682,18 @@ cmd_logs() {
 cmd_onboard() {
   ensure_docker_ready
   local instance="$1"
+  local env_file gateway_port bind token
   ensure_instance_exists "$instance"
-  run_compose "$instance" run --rm openclaw-cli onboard --no-install-daemon
+  env_file="$(instance_env_file "$instance")"
+  gateway_port="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_PORT")"
+  bind="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_BIND")"
+  token="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_TOKEN")"
+  run_compose "$instance" run --rm openclaw-cli onboard \
+    --gateway-port "${gateway_port:-18789}" \
+    --gateway-bind "${bind:-lan}" \
+    --gateway-auth token \
+    --gateway-token "$token" \
+    --no-install-daemon
 }
 
 cmd_cli() {
@@ -682,8 +714,9 @@ cmd_cli() {
 cmd_devices() {
   ensure_docker_ready
   local instance="$1"
-  local token
+  local token listen_port
   local has_auth_arg=false
+  local has_url_arg=false
   local arg
   local -a device_args
   shift
@@ -700,7 +733,9 @@ cmd_devices() {
   for arg in "${device_args[@]}"; do
     if [[ "$arg" == "--token" || "$arg" == "--password" ]]; then
       has_auth_arg=true
-      break
+    fi
+    if [[ "$arg" == "--url" ]]; then
+      has_url_arg=true
     fi
   done
   if [[ "$has_auth_arg" == false ]]; then
@@ -708,6 +743,10 @@ cmd_devices() {
     if [[ -n "$token" ]]; then
       device_args+=(--token "$token")
     fi
+  fi
+  if [[ "$has_url_arg" == false ]]; then
+    listen_port="$(resolve_instance_gateway_listen_port "$instance")"
+    device_args+=(--url "ws://127.0.0.1:${listen_port}")
   fi
 
   # Run against the running gateway container to avoid loopback resolution issues
