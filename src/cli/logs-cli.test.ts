@@ -119,14 +119,22 @@ describe("logs cli", () => {
   });
 
   describe("formatLogTimestamp", () => {
-    it("formats UTC timestamp in plain mode by default", () => {
-      const result = formatLogTimestamp("2025-01-01T12:00:00.000Z");
-      expect(result).toBe("2025-01-01T12:00:00.000Z");
+    it("formats local timestamp in plain mode by default", () => {
+      const input = "2025-01-01T12:00:00.000Z";
+      const result = formatLogTimestamp(input);
+      expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
     });
 
-    it("formats UTC timestamp in pretty mode", () => {
-      const result = formatLogTimestamp("2025-01-01T12:00:00.000Z", "pretty");
-      expect(result).toBe("12:00:00");
+    it("formats local timestamp in pretty mode by default", () => {
+      const input = "2025-01-01T12:00:00.000Z";
+      const result = formatLogTimestamp(input, "pretty");
+      expect(result).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    });
+
+    it("formats UTC timestamp when localTime is false", () => {
+      const input = "2025-01-01T12:00:00.000Z";
+      const result = formatLogTimestamp(input, "plain", false);
+      expect(result).toBe("2025-01-01T12:00:00.000Z");
     });
 
     it("formats local time in plain mode when localTime is true", () => {

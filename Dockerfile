@@ -31,6 +31,9 @@ RUN pnpm ui:build
 
 ENV NODE_ENV=production
 
+RUN npm i -g clawhub @openai/codex playwright && \
+    npx --yes playwright install chromium
+
 # Allow non-root user to write temp files during runtime/tests.
 RUN chown -R node:node /app
 

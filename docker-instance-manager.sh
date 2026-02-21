@@ -6,6 +6,7 @@ BASE_COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 STATE_DIR="${OPENCLAW_INSTANCES_DIR:-$HOME/.openclaw/docker-instances}"
 DEFAULT_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
 DEFAULT_BIND="${OPENCLAW_GATEWAY_BIND:-lan}"
+DEFAULT_TZ="${OPENCLAW_TZ:-Asia/Shanghai}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -90,6 +91,18 @@ resolve_instance_gateway_listen_port() {
   printf '%s' "18789"
 }
 
+resolve_instance_timezone() {
+  local instance="$1"
+  local env_file tz
+  env_file="$(instance_env_file "$instance")"
+  tz="$(read_instance_env_value "$env_file" "OPENCLAW_TZ")"
+  if [[ -n "$tz" ]]; then
+    printf '%s' "$tz"
+    return
+  fi
+  printf '%s' "$DEFAULT_TZ"
+}
+
 ensure_docker_ready() {
   require_cmd docker
   if ! docker compose version >/dev/null 2>&1; then
@@ -134,6 +147,7 @@ Create options:
   --https-proxy <url>        HTTPS proxy URL (default: same as --http-proxy)
   --no-proxy <csv>           NO_PROXY value (default: localhost,127.0.0.1,::1,host.docker.internal)
   --network-mode <mode>      Docker network mode: bridge|host (default: host)
+  --tz <iana-tz>             Timezone (default: Asia/Shanghai)
 
 Global options:
   --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
@@ -394,6 +408,7 @@ cmd_create() {
   local config_dir workspace_dir
   local image bind token apt_packages home_volume expose_bridge gateway_verbose network_mode
   local gateway_listen_port
+  local timezone
   local http_proxy https_proxy no_proxy
   local -a extra_mounts
 
@@ -410,6 +425,7 @@ cmd_create() {
   home_volume="${OPENCLAW_HOME_VOLUME:-}"
   expose_bridge="${OPENCLAW_EXPOSE_BRIDGE_PORT:-0}"
   gateway_verbose="${OPENCLAW_GATEWAY_VERBOSE:-}"
+  timezone="${OPENCLAW_TZ:-$DEFAULT_TZ}"
   network_mode="${OPENCLAW_DOCKER_NETWORK_MODE:-host}"
   http_proxy="${OPENCLAW_HTTP_PROXY:-http://127.0.0.1:10871}"
   https_proxy="${OPENCLAW_HTTPS_PROXY:-$http_proxy}"
@@ -488,6 +504,10 @@ cmd_create() {
         network_mode="$2"
         shift 2
         ;;
+      --tz)
+        timezone="$2"
+        shift 2
+        ;;
       *)
         echo "Unknown option for create: $1" >&2
         exit 1
@@ -533,6 +553,7 @@ OPENCLAW_BRIDGE_PORT=$bridge_port
 OPENCLAW_EXPOSE_BRIDGE_PORT=$expose_bridge
 OPENCLAW_GATEWAY_BIND=$bind
 OPENCLAW_GATEWAY_VERBOSE=$gateway_verbose
+OPENCLAW_TZ=$timezone
 OPENCLAW_GATEWAY_TOKEN=$token
 OPENCLAW_IMAGE=$image
 OPENCLAW_DOCKER_APT_PACKAGES=$apt_packages
@@ -557,6 +578,7 @@ EOF
   echo "  env file: $env_file"
   echo "  image: $image"
   echo "  network mode: $network_mode"
+  echo "  timezone: $timezone"
   echo "  gateway port: $gateway_port"
   echo "  gateway listen port: $gateway_listen_port"
   if [[ "$expose_bridge" == "1" ]]; then
@@ -587,11 +609,12 @@ EOF
 cmd_up() {
   ensure_docker_ready
   local instance="$1"
-  local listen_port
+  local listen_port timezone
   local gateway_verbose=""
   shift
   ensure_instance_exists "$instance"
   listen_port="$(resolve_instance_gateway_listen_port "$instance")"
+  timezone="$(resolve_instance_timezone "$instance")"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --verbose)
@@ -606,10 +629,10 @@ cmd_up() {
   done
 
   if [[ -n "$gateway_verbose" ]]; then
-    OPENCLAW_GATEWAY_VERBOSE="$gateway_verbose" OPENCLAW_GATEWAY_LISTEN_PORT="$listen_port" run_compose "$instance" up -d openclaw-gateway
+    OPENCLAW_GATEWAY_VERBOSE="$gateway_verbose" OPENCLAW_GATEWAY_LISTEN_PORT="$listen_port" OPENCLAW_TZ="$timezone" run_compose "$instance" up -d openclaw-gateway
     return
   fi
-  OPENCLAW_GATEWAY_LISTEN_PORT="$listen_port" run_compose "$instance" up -d openclaw-gateway
+  OPENCLAW_GATEWAY_LISTEN_PORT="$listen_port" OPENCLAW_TZ="$timezone" run_compose "$instance" up -d openclaw-gateway
 }
 
 cmd_down() {
@@ -622,8 +645,10 @@ cmd_down() {
 cmd_restart() {
   ensure_docker_ready
   local instance="$1"
+  local timezone
   ensure_instance_exists "$instance"
-  run_compose "$instance" restart openclaw-gateway
+  timezone="$(resolve_instance_timezone "$instance")"
+  OPENCLAW_TZ="$timezone" run_compose "$instance" restart openclaw-gateway
 }
 
 cmd_status() {
@@ -643,6 +668,7 @@ cmd_logs() {
   shift
   ensure_instance_exists "$instance"
   local env_file verbose image gateway_port bridge_port bind_mode
+  local timezone
   local -a log_args
 
   verbose=false
@@ -666,9 +692,11 @@ cmd_logs() {
     gateway_port="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_PORT")"
     bridge_port="$(read_instance_env_value "$env_file" "OPENCLAW_BRIDGE_PORT")"
     bind_mode="$(read_instance_env_value "$env_file" "OPENCLAW_GATEWAY_BIND")"
+    timezone="$(read_instance_env_value "$env_file" "OPENCLAW_TZ")"
     echo "Instance: $instance"
     echo "  image: ${image:-unknown}"
     echo "  bind: ${bind_mode:-unknown}"
+    echo "  timezone: ${timezone:-$DEFAULT_TZ}"
     echo "  gateway port: ${gateway_port:-unknown}"
     echo "  bridge port: ${bridge_port:-disabled}"
     run_compose "$instance" ps
