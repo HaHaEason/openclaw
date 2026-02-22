@@ -775,7 +775,11 @@ cmd_cli() {
   ensure_docker_ready
   local instance="$1"
   local token listen_port
+  local first_arg second_arg
+  local has_port_arg="0"
+  local arg
   local -a run_args
+  local -a cli_args
   shift
   ensure_instance_exists "$instance"
   if [[ $# -gt 0 && "$1" == "--" ]]; then
@@ -788,12 +792,32 @@ cmd_cli() {
 
   token="$(resolve_instance_gateway_token "$instance")"
   listen_port="$(resolve_instance_gateway_listen_port "$instance")"
-  run_args=(run --rm -e "OPENCLAW_GATEWAY_PORT=${listen_port}")
+  run_args=(
+    run
+    --rm
+    -e "OPENCLAW_GATEWAY_PORT=${listen_port}"
+    -e "OPENCLAW_GATEWAY_LISTEN_PORT=${listen_port}"
+  )
   if [[ -n "$token" ]]; then
     run_args+=(-e "OPENCLAW_GATEWAY_TOKEN=${token}")
   fi
 
-  run_compose "$instance" "${run_args[@]}" openclaw-cli "$@"
+  cli_args=("$@")
+  first_arg="${cli_args[0]:-}"
+  second_arg="${cli_args[1]:-}"
+  if [[ "$first_arg" == "gateway" ]]; then
+    for arg in "${cli_args[@]}"; do
+      if [[ "$arg" == "--port" || "$arg" == --port=* ]]; then
+        has_port_arg="1"
+        break
+      fi
+    done
+    if [[ "$has_port_arg" == "0" && ( -z "$second_arg" || "$second_arg" == "run" ) ]]; then
+      cli_args+=(--port "$listen_port")
+    fi
+  fi
+
+  run_compose "$instance" "${run_args[@]}" openclaw-cli "${cli_args[@]}"
 }
 
 cmd_devices() {

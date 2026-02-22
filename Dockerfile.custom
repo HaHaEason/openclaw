@@ -41,8 +41,25 @@ RUN set -eux; \
     chown -R node:node "$RUSTUP_HOME" "$CARGO_HOME"
 
 # Install uv and use a dedicated venv to avoid Debian's externally-managed Python restrictions.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    install -m 0755 /root/.local/bin/uv /usr/local/bin/uv
+# Network in CI/remote builders can be flaky, so retry installer fetch explicitly.
+RUN set -eux; \
+    for attempt in 1 2 3; do \
+      if curl -fLsS --retry 5 --retry-all-errors --retry-delay 2 https://astral.sh/uv/install.sh -o /tmp/uv-install.sh; then \
+        break; \
+      fi; \
+      if [ "$attempt" -eq 3 ]; then \
+        exit 1; \
+      fi; \
+      sleep $((attempt * 2)); \
+    done; \
+    sh /tmp/uv-install.sh; \
+    UV_BIN="$(command -v uv || true)"; \
+    if [ -z "$UV_BIN" ] && [ -x /root/.local/bin/uv ]; then \
+      UV_BIN=/root/.local/bin/uv; \
+    fi; \
+    test -n "$UV_BIN"; \
+    install -m 0755 "$UV_BIN" /usr/local/bin/uv; \
+    rm -f /tmp/uv-install.sh
 
 RUN uv venv "$VIRTUAL_ENV"
 

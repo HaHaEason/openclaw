@@ -106,7 +106,7 @@ describe("runConfigureWizard", () => {
       config: {},
       issues: [],
     });
-    mocks.resolveGatewayPort.mockReturnValue(18789);
+    mocks.resolveGatewayPort.mockReturnValue(20000);
     mocks.probeGatewayReachable.mockResolvedValue({ ok: false });
     mocks.resolveControlUiLinks.mockReturnValue({ wsUrl: "ws://127.0.0.1:18789" });
     mocks.summarizeExistingConfig.mockReturnValue("");
@@ -128,6 +128,9 @@ describe("runConfigureWizard", () => {
       },
     );
 
+    expect(mocks.probeGatewayReachable).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "ws://127.0.0.1:20000" }),
+    );
     expect(mocks.writeConfigFile).toHaveBeenCalledWith(
       expect.objectContaining({
         gateway: expect.objectContaining({ mode: "local" }),

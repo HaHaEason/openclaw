@@ -241,7 +241,8 @@ export async function runConfigureWizard(
       }
     }
 
-    const localUrl = "ws://127.0.0.1:18789";
+    const localPort = resolveGatewayPort(baseConfig);
+    const localUrl = `ws://127.0.0.1:${localPort}`;
     const localProbe = await probeGatewayReachable({
       url: localUrl,
       token: baseConfig.gateway?.auth?.token ?? process.env.OPENCLAW_GATEWAY_TOKEN,
@@ -308,7 +309,7 @@ export async function runConfigureWizard(
       nextConfig.agents?.defaults?.workspace ??
       baseConfig.agents?.defaults?.workspace ??
       DEFAULT_WORKSPACE;
-    let gatewayPort = resolveGatewayPort(baseConfig);
+    let gatewayPort = localPort;
     let gatewayToken: string | undefined =
       nextConfig.gateway?.auth?.token ??
       baseConfig.gateway?.auth?.token ??
