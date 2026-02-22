@@ -1,0 +1,78 @@
+FROM openclaw:local
+
+USER root
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    RUSTUP_HOME=/home/node/.rustup \
+    CARGO_HOME=/home/node/.cargo \
+    VIRTUAL_ENV=/home/node/.venv \
+    PATH=/home/node/.cargo/bin:$PATH \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    libffi-dev \
+    libssl-dev \
+    python3 \
+    python3-dev \
+    python3-venv \
+    nginx \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libjpeg-dev \
+    libpng-dev \
+    v4l-utils \
+    ffmpeg \
+    socat \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/nginx.nonroot.conf /etc/nginx/nginx.conf
+RUN mkdir -p /tmp/nginx/client_temp /tmp/nginx/proxy_temp /tmp/nginx/fastcgi_temp /tmp/nginx/uwsgi_temp /tmp/nginx/scgi_temp && \
+    chown -R node:node /tmp/nginx
+
+RUN set -eux; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal; \
+    chown -R node:node "$RUSTUP_HOME" "$CARGO_HOME"
+
+# Install uv and use a dedicated venv to avoid Debian's externally-managed Python restrictions.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    install -m 0755 /root/.local/bin/uv /usr/local/bin/uv
+
+RUN uv venv "$VIRTUAL_ENV"
+
+ENV PATH=$VIRTUAL_ENV/bin:$PATH
+
+RUN uv pip install --python "$VIRTUAL_ENV/bin/python" \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision torchaudio
+
+RUN uv pip install --python "$VIRTUAL_ENV/bin/python" \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    opencv-python-headless \
+    Pillow \
+    matplotlib \
+    scikit-image \
+    ultralytics \
+    segment-anything-fast \
+    onnxruntime \
+    maturin
+
+RUN uv pip install --python "$VIRTUAL_ENV/bin/python" \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    pyserial \
+    requests \
+    python-dotenv \
+    paho-mqtt \
+    flask \
+    gunicorn
+
+RUN chown -R node:node "$VIRTUAL_ENV"
+
+# Keep gateway runtime behavior from base image while retaining least privilege.
+USER node

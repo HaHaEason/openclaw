@@ -4,9 +4,25 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 STATE_DIR="${OPENCLAW_INSTANCES_DIR:-$HOME/.openclaw/docker-instances}"
-DEFAULT_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
+DEFAULT_BASE_IMAGE="openclaw:local"
+DEFAULT_CUSTOM_IMAGE="openclaw:local-custom"
+CUSTOM_DOCKERFILE="$ROOT_DIR/Dockerfile.custom"
 DEFAULT_BIND="${OPENCLAW_GATEWAY_BIND:-lan}"
 DEFAULT_TZ="${OPENCLAW_TZ:-Asia/Shanghai}"
+
+resolve_default_image() {
+  if [[ -n "${OPENCLAW_IMAGE:-}" ]]; then
+    printf '%s' "${OPENCLAW_IMAGE}"
+    return
+  fi
+  if [[ -f "$CUSTOM_DOCKERFILE" ]]; then
+    printf '%s' "$DEFAULT_CUSTOM_IMAGE"
+    return
+  fi
+  printf '%s' "$DEFAULT_BASE_IMAGE"
+}
+
+DEFAULT_IMAGE="$(resolve_default_image)"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -115,7 +131,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ./docker-instance-manager.sh [--instances-dir <dir>] <command> [args...]
-  ./docker-instance-manager.sh build [--image <image>] [--apt-packages "<pkg1 pkg2>"]
+  ./docker-instance-manager.sh build [--image <image>] [--apt-packages "<pkg1 pkg2>"] [--with-base-build]
   ./docker-instance-manager.sh create <name> [options]
   ./docker-instance-manager.sh up <name> [--verbose]
   ./docker-instance-manager.sh down <name>
@@ -136,7 +152,7 @@ Create options:
   --no-bridge-port           Force disable bridge port mapping
   --config-dir <dir>         Host config directory (default: ~/.openclaw/instances/<name>/config)
   --workspace-dir <dir>      Host workspace directory (default: ~/.openclaw/instances/<name>/workspace)
-  --image <image>            Docker image (default: openclaw:local)
+  --image <image>            Docker image (default: OPENCLAW_IMAGE or auto)
   --bind <lan|loopback>      Gateway bind mode (default: lan)
   --token <token>            Gateway token (default: auto generated)
   --home-volume <name|path>  Mount to /home/node (named volume or host path)
@@ -365,6 +381,8 @@ cmd_build() {
   ensure_docker_ready
   local image="$DEFAULT_IMAGE"
   local apt_packages="${OPENCLAW_DOCKER_APT_PACKAGES:-}"
+  local use_custom=0
+  local with_base_build=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -376,12 +394,41 @@ cmd_build() {
         apt_packages="$2"
         shift 2
         ;;
+      --with-base-build)
+        with_base_build=1
+        shift
+        ;;
       *)
         echo "Unknown option for build: $1" >&2
         exit 1
         ;;
     esac
   done
+
+  if [[ -f "$CUSTOM_DOCKERFILE" ]]; then
+    use_custom=1
+  fi
+
+  if [[ "$use_custom" == "1" ]]; then
+    if [[ "$with_base_build" == "1" ]]; then
+      echo "==> Detected Dockerfile.custom; building base image: $DEFAULT_BASE_IMAGE"
+      docker build \
+        --build-arg "OPENCLAW_DOCKER_APT_PACKAGES=$apt_packages" \
+        -t "$DEFAULT_BASE_IMAGE" \
+        -f "$ROOT_DIR/Dockerfile" \
+        "$ROOT_DIR"
+    else
+      echo "==> Detected Dockerfile.custom; skipping base build (use --with-base-build to build $DEFAULT_BASE_IMAGE)"
+    fi
+
+    echo "==> Building custom image: $image"
+    docker build \
+      --build-arg "OPENCLAW_DOCKER_APT_PACKAGES=$apt_packages" \
+      -t "$image" \
+      -f "$CUSTOM_DOCKERFILE" \
+      "$ROOT_DIR"
+    return
+  fi
 
   echo "==> Building image: $image"
   docker build \
