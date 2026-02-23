@@ -129,6 +129,12 @@ export const QueueDropSchema = z.union([
   z.literal("summarize"),
 ]);
 export const ReplyToModeSchema = z.union([z.literal("off"), z.literal("first"), z.literal("all")]);
+export const TypingModeSchema = z.union([
+  z.literal("never"),
+  z.literal("instant"),
+  z.literal("thinking"),
+  z.literal("message"),
+]);
 
 // GroupPolicySchema: controls how group messages are handled
 // Used with .default("allowlist").optional() pattern:
@@ -248,6 +254,16 @@ export const HumanDelaySchema = z
   })
   .strict();
 
+const CliBackendWatchdogModeSchema = z
+  .object({
+    noOutputTimeoutMs: z.number().int().min(1000).optional(),
+    noOutputTimeoutRatio: z.number().min(0.05).max(0.95).optional(),
+    minMs: z.number().int().min(1000).optional(),
+    maxMs: z.number().int().min(1000).optional(),
+  })
+  .strict()
+  .optional();
+
 export const CliBackendSchema = z
   .object({
     command: z.string(),
@@ -279,24 +295,8 @@ export const CliBackendSchema = z
       .object({
         watchdog: z
           .object({
-            fresh: z
-              .object({
-                noOutputTimeoutMs: z.number().int().min(1000).optional(),
-                noOutputTimeoutRatio: z.number().min(0.05).max(0.95).optional(),
-                minMs: z.number().int().min(1000).optional(),
-                maxMs: z.number().int().min(1000).optional(),
-              })
-              .strict()
-              .optional(),
-            resume: z
-              .object({
-                noOutputTimeoutMs: z.number().int().min(1000).optional(),
-                noOutputTimeoutRatio: z.number().min(0.05).max(0.95).optional(),
-                minMs: z.number().int().min(1000).optional(),
-                maxMs: z.number().int().min(1000).optional(),
-              })
-              .strict()
-              .optional(),
+            fresh: CliBackendWatchdogModeSchema,
+            resume: CliBackendWatchdogModeSchema,
           })
           .strict()
           .optional(),
@@ -436,6 +436,16 @@ const ProviderOptionsSchema = z
   .record(z.string(), z.record(z.string(), ProviderOptionValueSchema))
   .optional();
 
+const MediaUnderstandingRuntimeFields = {
+  prompt: z.string().optional(),
+  timeoutSeconds: z.number().int().positive().optional(),
+  language: z.string().optional(),
+  providerOptions: ProviderOptionsSchema,
+  deepgram: DeepgramAudioSchema,
+  baseUrl: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+};
+
 export const MediaUnderstandingModelSchema = z
   .object({
     provider: z.string().optional(),
@@ -444,15 +454,9 @@ export const MediaUnderstandingModelSchema = z
     type: z.union([z.literal("provider"), z.literal("cli")]).optional(),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
-    prompt: z.string().optional(),
     maxChars: z.number().int().positive().optional(),
     maxBytes: z.number().int().positive().optional(),
-    timeoutSeconds: z.number().int().positive().optional(),
-    language: z.string().optional(),
-    providerOptions: ProviderOptionsSchema,
-    deepgram: DeepgramAudioSchema,
-    baseUrl: z.string().optional(),
-    headers: z.record(z.string(), z.string()).optional(),
+    ...MediaUnderstandingRuntimeFields,
     profile: z.string().optional(),
     preferredProfile: z.string().optional(),
   })
@@ -465,13 +469,7 @@ export const ToolsMediaUnderstandingSchema = z
     scope: MediaUnderstandingScopeSchema,
     maxBytes: z.number().int().positive().optional(),
     maxChars: z.number().int().positive().optional(),
-    prompt: z.string().optional(),
-    timeoutSeconds: z.number().int().positive().optional(),
-    language: z.string().optional(),
-    providerOptions: ProviderOptionsSchema,
-    deepgram: DeepgramAudioSchema,
-    baseUrl: z.string().optional(),
-    headers: z.record(z.string(), z.string()).optional(),
+    ...MediaUnderstandingRuntimeFields,
     attachments: MediaUnderstandingAttachmentsSchema,
     models: z.array(MediaUnderstandingModelSchema).optional(),
   })

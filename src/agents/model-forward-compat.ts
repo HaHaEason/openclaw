@@ -10,6 +10,9 @@ const OPENAI_CODEX_TEMPLATE_MODEL_IDS = ["gpt-5.2-codex"] as const;
 const ANTHROPIC_OPUS_46_MODEL_ID = "claude-opus-4-6";
 const ANTHROPIC_OPUS_46_DOT_MODEL_ID = "claude-opus-4.6";
 const ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS = ["claude-opus-4-5", "claude-opus-4.5"] as const;
+const ANTHROPIC_SONNET_46_MODEL_ID = "claude-sonnet-4-6";
+const ANTHROPIC_SONNET_46_DOT_MODEL_ID = "claude-sonnet-4.6";
+const ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS = ["claude-sonnet-4-5", "claude-sonnet-4.5"] as const;
 
 const ZAI_GLM5_MODEL_ID = "glm-5";
 const ZAI_GLM5_TEMPLATE_MODEL_IDS = ["glm-4.7"] as const;
@@ -23,6 +26,12 @@ const ANTIGRAVITY_OPUS_THINKING_TEMPLATE_MODEL_IDS = [
   "claude-opus-4-5-thinking",
   "claude-opus-4.5-thinking",
 ] as const;
+const ANTIGRAVITY_GEMINI_31_PRO_HIGH_MODEL_ID = "gemini-3-1-pro-high";
+const ANTIGRAVITY_GEMINI_31_PRO_DOT_HIGH_MODEL_ID = "gemini-3.1-pro-high";
+const ANTIGRAVITY_GEMINI_31_PRO_LOW_MODEL_ID = "gemini-3-1-pro-low";
+const ANTIGRAVITY_GEMINI_31_PRO_DOT_LOW_MODEL_ID = "gemini-3.1-pro-low";
+const ANTIGRAVITY_GEMINI_31_PRO_HIGH_TEMPLATE_MODEL_IDS = ["gemini-3-pro-high"] as const;
+const ANTIGRAVITY_GEMINI_31_PRO_LOW_TEMPLATE_MODEL_IDS = ["gemini-3-pro-low"] as const;
 
 export const ANTIGRAVITY_OPUS_46_FORWARD_COMPAT_CANDIDATES = [
   {
@@ -31,10 +40,25 @@ export const ANTIGRAVITY_OPUS_46_FORWARD_COMPAT_CANDIDATES = [
       "google-antigravity/claude-opus-4-5-thinking",
       "google-antigravity/claude-opus-4.5-thinking",
     ],
+    availabilityAliasIds: [] as const,
   },
   {
     id: ANTIGRAVITY_OPUS_46_MODEL_ID,
     templatePrefixes: ["google-antigravity/claude-opus-4-5", "google-antigravity/claude-opus-4.5"],
+    availabilityAliasIds: [] as const,
+  },
+] as const;
+
+export const ANTIGRAVITY_GEMINI_31_FORWARD_COMPAT_CANDIDATES = [
+  {
+    id: ANTIGRAVITY_GEMINI_31_PRO_HIGH_MODEL_ID,
+    templatePrefixes: ["google-antigravity/gemini-3-pro-high"],
+    availabilityAliasIds: [ANTIGRAVITY_GEMINI_31_PRO_DOT_HIGH_MODEL_ID],
+  },
+  {
+    id: ANTIGRAVITY_GEMINI_31_PRO_LOW_MODEL_ID,
+    templatePrefixes: ["google-antigravity/gemini-3-pro-low"],
+    availabilityAliasIds: [ANTIGRAVITY_GEMINI_31_PRO_DOT_LOW_MODEL_ID],
   },
 ] as const;
 
@@ -101,11 +125,17 @@ function resolveOpenAICodexGpt53FallbackModel(
   } as Model<Api>);
 }
 
-function resolveAnthropicOpus46ForwardCompatModel(
-  provider: string,
-  modelId: string,
-  modelRegistry: ModelRegistry,
-): Model<Api> | undefined {
+function resolveAnthropic46ForwardCompatModel(params: {
+  provider: string;
+  modelId: string;
+  modelRegistry: ModelRegistry;
+  dashModelId: string;
+  dotModelId: string;
+  dashTemplateId: string;
+  dotTemplateId: string;
+  fallbackTemplateIds: readonly string[];
+}): Model<Api> | undefined {
+  const { provider, modelId, modelRegistry, dashModelId, dotModelId } = params;
   const normalizedProvider = normalizeProviderId(provider);
   if (normalizedProvider !== "anthropic") {
     return undefined;
@@ -113,29 +143,63 @@ function resolveAnthropicOpus46ForwardCompatModel(
 
   const trimmedModelId = modelId.trim();
   const lower = trimmedModelId.toLowerCase();
-  const isOpus46 =
-    lower === ANTHROPIC_OPUS_46_MODEL_ID ||
-    lower === ANTHROPIC_OPUS_46_DOT_MODEL_ID ||
-    lower.startsWith(`${ANTHROPIC_OPUS_46_MODEL_ID}-`) ||
-    lower.startsWith(`${ANTHROPIC_OPUS_46_DOT_MODEL_ID}-`);
-  if (!isOpus46) {
+  const is46Model =
+    lower === dashModelId ||
+    lower === dotModelId ||
+    lower.startsWith(`${dashModelId}-`) ||
+    lower.startsWith(`${dotModelId}-`);
+  if (!is46Model) {
     return undefined;
   }
 
   const templateIds: string[] = [];
-  if (lower.startsWith(ANTHROPIC_OPUS_46_MODEL_ID)) {
-    templateIds.push(lower.replace(ANTHROPIC_OPUS_46_MODEL_ID, "claude-opus-4-5"));
+  if (lower.startsWith(dashModelId)) {
+    templateIds.push(lower.replace(dashModelId, params.dashTemplateId));
   }
-  if (lower.startsWith(ANTHROPIC_OPUS_46_DOT_MODEL_ID)) {
-    templateIds.push(lower.replace(ANTHROPIC_OPUS_46_DOT_MODEL_ID, "claude-opus-4.5"));
+  if (lower.startsWith(dotModelId)) {
+    templateIds.push(lower.replace(dotModelId, params.dotTemplateId));
   }
-  templateIds.push(...ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS);
+  templateIds.push(...params.fallbackTemplateIds);
 
   return cloneFirstTemplateModel({
     normalizedProvider,
     trimmedModelId,
     templateIds,
     modelRegistry,
+  });
+}
+
+function resolveAnthropicOpus46ForwardCompatModel(
+  provider: string,
+  modelId: string,
+  modelRegistry: ModelRegistry,
+): Model<Api> | undefined {
+  return resolveAnthropic46ForwardCompatModel({
+    provider,
+    modelId,
+    modelRegistry,
+    dashModelId: ANTHROPIC_OPUS_46_MODEL_ID,
+    dotModelId: ANTHROPIC_OPUS_46_DOT_MODEL_ID,
+    dashTemplateId: "claude-opus-4-5",
+    dotTemplateId: "claude-opus-4.5",
+    fallbackTemplateIds: ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS,
+  });
+}
+
+function resolveAnthropicSonnet46ForwardCompatModel(
+  provider: string,
+  modelId: string,
+  modelRegistry: ModelRegistry,
+): Model<Api> | undefined {
+  return resolveAnthropic46ForwardCompatModel({
+    provider,
+    modelId,
+    modelRegistry,
+    dashModelId: ANTHROPIC_SONNET_46_MODEL_ID,
+    dotModelId: ANTHROPIC_SONNET_46_DOT_MODEL_ID,
+    dashTemplateId: "claude-sonnet-4-5",
+    dotTemplateId: "claude-sonnet-4.5",
+    fallbackTemplateIds: ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS,
   });
 }
 
@@ -235,6 +299,40 @@ function resolveAntigravityOpus46ForwardCompatModel(
   });
 }
 
+function resolveAntigravityGemini31ForwardCompatModel(
+  provider: string,
+  modelId: string,
+  modelRegistry: ModelRegistry,
+): Model<Api> | undefined {
+  const normalizedProvider = normalizeProviderId(provider);
+  if (normalizedProvider !== "google-antigravity") {
+    return undefined;
+  }
+
+  const trimmedModelId = modelId.trim();
+  const lower = trimmedModelId.toLowerCase();
+  const isGemini31High =
+    lower === ANTIGRAVITY_GEMINI_31_PRO_HIGH_MODEL_ID ||
+    lower === ANTIGRAVITY_GEMINI_31_PRO_DOT_HIGH_MODEL_ID;
+  const isGemini31Low =
+    lower === ANTIGRAVITY_GEMINI_31_PRO_LOW_MODEL_ID ||
+    lower === ANTIGRAVITY_GEMINI_31_PRO_DOT_LOW_MODEL_ID;
+  if (!isGemini31High && !isGemini31Low) {
+    return undefined;
+  }
+
+  const templateIds = isGemini31High
+    ? [...ANTIGRAVITY_GEMINI_31_PRO_HIGH_TEMPLATE_MODEL_IDS]
+    : [...ANTIGRAVITY_GEMINI_31_PRO_LOW_TEMPLATE_MODEL_IDS];
+
+  return cloneFirstTemplateModel({
+    normalizedProvider,
+    trimmedModelId,
+    templateIds,
+    modelRegistry,
+  });
+}
+
 export function resolveForwardCompatModel(
   provider: string,
   modelId: string,
@@ -243,7 +341,9 @@ export function resolveForwardCompatModel(
   return (
     resolveOpenAICodexGpt53FallbackModel(provider, modelId, modelRegistry) ??
     resolveAnthropicOpus46ForwardCompatModel(provider, modelId, modelRegistry) ??
+    resolveAnthropicSonnet46ForwardCompatModel(provider, modelId, modelRegistry) ??
     resolveZaiGlm5ForwardCompatModel(provider, modelId, modelRegistry) ??
-    resolveAntigravityOpus46ForwardCompatModel(provider, modelId, modelRegistry)
+    resolveAntigravityOpus46ForwardCompatModel(provider, modelId, modelRegistry) ??
+    resolveAntigravityGemini31ForwardCompatModel(provider, modelId, modelRegistry)
   );
 }

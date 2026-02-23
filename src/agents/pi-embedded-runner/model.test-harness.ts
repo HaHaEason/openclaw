@@ -1,11 +1,12 @@
 import { vi } from "vitest";
+import type { ModelDefinitionConfig } from "../../config/types.js";
 import { discoverModels } from "../pi-model-discovery.js";
 
-export const makeModel = (id: string) => ({
+export const makeModel = (id: string): ModelDefinitionConfig => ({
   id,
   name: id,
   reasoning: false,
-  input: ["text"] as const,
+  input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 1,
   maxTokens: 1,
@@ -23,6 +24,28 @@ export const OPENAI_CODEX_TEMPLATE_MODEL = {
   contextWindow: 272000,
   maxTokens: 128000,
 };
+
+export function mockOpenAICodexTemplateModel(): void {
+  mockDiscoveredModel({
+    provider: "openai-codex",
+    modelId: "gpt-5.2-codex",
+    templateModel: OPENAI_CODEX_TEMPLATE_MODEL,
+  });
+}
+
+export function buildOpenAICodexForwardCompatExpectation(
+  id: string = "gpt-5.3-codex",
+): Partial<typeof OPENAI_CODEX_TEMPLATE_MODEL> & { provider: string; id: string } {
+  return {
+    provider: "openai-codex",
+    id,
+    api: "openai-codex-responses",
+    baseUrl: "https://chatgpt.com/backend-api",
+    reasoning: true,
+    contextWindow: 272000,
+    maxTokens: 128000,
+  };
+}
 
 export function resetMockDiscoverModels(): void {
   vi.mocked(discoverModels).mockReturnValue({

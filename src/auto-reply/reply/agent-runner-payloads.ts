@@ -10,6 +10,7 @@ import { normalizeReplyPayloadDirectives } from "./reply-delivery.js";
 import {
   applyReplyThreading,
   filterMessagingToolDuplicates,
+  filterMessagingToolMediaDuplicates,
   isRenderablePayload,
   shouldSuppressMessagingToolReplies,
 } from "./reply-payloads.js";
@@ -27,6 +28,7 @@ export function buildReplyPayloads(params: {
   currentMessageId?: string;
   messageProvider?: string;
   messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
   messagingToolSentTargets?: Parameters<
     typeof shouldSuppressMessagingToolReplies
   >[0]["messagingToolSentTargets"];
@@ -89,20 +91,36 @@ export function buildReplyPayloads(params: {
     originatingTo: params.originatingTo,
     accountId: params.accountId,
   });
-  const dedupedPayloads = filterMessagingToolDuplicates({
-    payloads: replyTaggedPayloads,
-    sentTexts: messagingToolSentTexts,
-  });
+  // Only dedupe against messaging tool sends for the same origin target.
+  // Cross-target sends (for example posting to another channel) must not
+  // suppress the current conversation's final reply.
+  // If target metadata is unavailable, keep legacy dedupe behavior.
+  const dedupeMessagingToolPayloads =
+    suppressMessagingToolReplies || messagingToolSentTargets.length === 0;
+  const dedupedPayloads = dedupeMessagingToolPayloads
+    ? filterMessagingToolDuplicates({
+        payloads: replyTaggedPayloads,
+        sentTexts: messagingToolSentTexts,
+      })
+    : replyTaggedPayloads;
+  const mediaFilteredPayloads = dedupeMessagingToolPayloads
+    ? filterMessagingToolMediaDuplicates({
+        payloads: dedupedPayloads,
+        sentMediaUrls: params.messagingToolSentMediaUrls ?? [],
+      })
+    : dedupedPayloads;
   // Filter out payloads already sent via pipeline or directly during tool flush.
   const filteredPayloads = shouldDropFinalPayloads
     ? []
     : params.blockStreamingEnabled
-      ? dedupedPayloads.filter((payload) => !params.blockReplyPipeline?.hasSentPayload(payload))
+      ? mediaFilteredPayloads.filter(
+          (payload) => !params.blockReplyPipeline?.hasSentPayload(payload),
+        )
       : params.directlySentBlockKeys?.size
-        ? dedupedPayloads.filter(
+        ? mediaFilteredPayloads.filter(
             (payload) => !params.directlySentBlockKeys!.has(createBlockReplyPayloadKey(payload)),
           )
-        : dedupedPayloads;
+        : mediaFilteredPayloads;
   const replyPayloads = suppressMessagingToolReplies ? [] : filteredPayloads;
 
   return {

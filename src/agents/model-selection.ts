@@ -1,8 +1,11 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
-import { resolveAgentModelPrimary } from "./agent-scope.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveAgentConfig, resolveAgentModelPrimary } from "./agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
 import { normalizeGoogleModelId } from "./models-config.providers.js";
+
+const log = createSubsystemLogger("model-selection");
 
 export type ModelRef = {
   provider: string;
@@ -19,6 +22,7 @@ export type ModelAliasIndex = {
 const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
   "opus-4.6": "claude-opus-4-6",
   "opus-4.5": "claude-opus-4-5",
+  "sonnet-4.6": "claude-sonnet-4-6",
   "sonnet-4.5": "claude-sonnet-4-5",
 };
 const OPENAI_CODEX_OAUTH_MODEL_PREFIXES = ["gpt-5.3-codex"] as const;
@@ -45,7 +49,38 @@ export function normalizeProviderId(provider: string): string {
   if (normalized === "kimi-code") {
     return "kimi-coding";
   }
+  // Backward compatibility for older provider naming.
+  if (normalized === "bytedance" || normalized === "doubao") {
+    return "volcengine";
+  }
   return normalized;
+}
+
+export function findNormalizedProviderValue<T>(
+  entries: Record<string, T> | undefined,
+  provider: string,
+): T | undefined {
+  if (!entries) {
+    return undefined;
+  }
+  const providerKey = normalizeProviderId(provider);
+  for (const [key, value] of Object.entries(entries)) {
+    if (normalizeProviderId(key) === providerKey) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export function findNormalizedProviderKey(
+  entries: Record<string, unknown> | undefined,
+  provider: string,
+): string | undefined {
+  if (!entries) {
+    return undefined;
+  }
+  const providerKey = normalizeProviderId(provider);
+  return Object.keys(entries).find((key) => normalizeProviderId(key) === providerKey);
 }
 
 export function isCliProvider(provider: string, cfg?: OpenClawConfig): boolean {
@@ -75,6 +110,13 @@ function normalizeProviderModelId(provider: string, model: string): string {
   }
   if (provider === "google") {
     return normalizeGoogleModelId(model);
+  }
+  // OpenRouter-native models (e.g. "openrouter/aurora-alpha") need the full
+  // "openrouter/<name>" as the model ID sent to the API. Models from external
+  // providers already contain a slash (e.g. "anthropic/claude-sonnet-4-5") and
+  // are passed through as-is (#12924).
+  if (provider === "openrouter" && !model.includes("/")) {
+    return `openrouter/${model}`;
   }
   return model;
 }
@@ -116,6 +158,22 @@ export function parseModelRef(raw: string, defaultProvider: string): ModelRef | 
     return null;
   }
   return normalizeModelRef(providerRaw, model);
+}
+
+export function normalizeModelSelection(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const primary = (value as { primary?: unknown }).primary;
+  if (typeof primary === "string") {
+    const trimmed = primary.trim();
+    return trimmed || undefined;
+  }
+  return undefined;
 }
 
 export function resolveAllowlistModelKey(raw: string, defaultProvider: string): string | null {
@@ -222,8 +280,8 @@ export function resolveConfiguredModelRef(params: {
       }
 
       // Default to anthropic if no provider is specified, but warn as this is deprecated.
-      console.warn(
-        `[openclaw] Model "${trimmed}" specified without provider. Falling back to "anthropic/${trimmed}". Please use "anthropic/${trimmed}" in your config.`,
+      log.warn(
+        `Model "${trimmed}" specified without provider. Falling back to "anthropic/${trimmed}". Please use "anthropic/${trimmed}" in your config.`,
       );
       return { provider: "anthropic", model: trimmed };
     }
@@ -272,6 +330,38 @@ export function resolveDefaultModelForAgent(params: {
   });
 }
 
+export function resolveSubagentConfiguredModelSelection(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+}): string | undefined {
+  const agentConfig = resolveAgentConfig(params.cfg, params.agentId);
+  return (
+    normalizeModelSelection(agentConfig?.subagents?.model) ??
+    normalizeModelSelection(params.cfg.agents?.defaults?.subagents?.model) ??
+    normalizeModelSelection(agentConfig?.model)
+  );
+}
+
+export function resolveSubagentSpawnModelSelection(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  modelOverride?: unknown;
+}): string {
+  const runtimeDefault = resolveDefaultModelForAgent({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  });
+  return (
+    normalizeModelSelection(params.modelOverride) ??
+    resolveSubagentConfiguredModelSelection({
+      cfg: params.cfg,
+      agentId: params.agentId,
+    }) ??
+    normalizeModelSelection(params.cfg.agents?.defaults?.model?.primary) ??
+    `${runtimeDefault.provider}/${runtimeDefault.model}`
+  );
+}
+
 export function buildAllowedModelSet(params: {
   cfg: OpenClawConfig;
   catalog: ModelCatalogEntry[];
@@ -288,10 +378,11 @@ export function buildAllowedModelSet(params: {
   })();
   const allowAny = rawAllowlist.length === 0;
   const defaultModel = params.defaultModel?.trim();
-  const defaultKey =
+  const defaultRef =
     defaultModel && params.defaultProvider
-      ? modelKey(params.defaultProvider, defaultModel)
-      : undefined;
+      ? parseModelRef(defaultModel, params.defaultProvider)
+      : null;
+  const defaultKey = defaultRef ? modelKey(defaultRef.provider, defaultRef.model) : undefined;
   const catalogKeys = new Set(params.catalog.map((entry) => modelKey(entry.provider, entry.id)));
 
   if (allowAny) {
@@ -436,6 +527,21 @@ export function resolveThinkingDefault(params: {
     return "low";
   }
   return "off";
+}
+
+/** Default reasoning level when session/directive do not set it: "on" if model supports reasoning, else "off". */
+export function resolveReasoningDefault(params: {
+  provider: string;
+  model: string;
+  catalog?: ModelCatalogEntry[];
+}): "on" | "off" {
+  const key = modelKey(params.provider, params.model);
+  const candidate = params.catalog?.find(
+    (entry) =>
+      (entry.provider === params.provider && entry.id === params.model) ||
+      (entry.provider === key && entry.id === params.model),
+  );
+  return candidate?.reasoning === true ? "on" : "off";
 }
 
 /**

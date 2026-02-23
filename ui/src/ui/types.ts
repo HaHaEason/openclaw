@@ -1,3 +1,5 @@
+export type UpdateAvailable = import("../../../src/infra/update-startup.js").UpdateAvailable;
+
 export type ChannelsStatusSnapshot = {
   ts: number;
   channelOrder: string[];
@@ -284,6 +286,7 @@ export type ConfigSnapshot = {
 export type ConfigUiHint = {
   label?: string;
   help?: string;
+  tags?: string[];
   group?: string;
   order?: number;
   advanced?: boolean;
@@ -452,7 +455,7 @@ export type CronPayload =
     };
 
 export type CronDelivery = {
-  mode: "none" | "announce";
+  mode: "none" | "announce" | "webhook";
   channel?: string;
   to?: string;
   bestEffort?: boolean;
@@ -473,7 +476,6 @@ export type CronJob = {
   name: string;
   description?: string;
   enabled: boolean;
-  notify?: boolean;
   deleteAfterRun?: boolean;
   createdAtMs: number;
   updatedAtMs: number;

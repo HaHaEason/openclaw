@@ -23,21 +23,29 @@ type ParsedBindMount = {
   writable: boolean;
 };
 
+type SplitBindSpec = {
+  host: string;
+  container: string;
+  options: string;
+};
+
 export function parseSandboxBindMount(spec: string): ParsedBindMount | null {
   const trimmed = spec.trim();
   if (!trimmed) {
     return null;
   }
-  const parts = trimmed.split(":");
-  if (parts.length < 2) {
+
+  const parsed = splitBindSpec(trimmed);
+  if (!parsed) {
     return null;
   }
-  const hostToken = (parts[0] ?? "").trim();
-  const containerToken = (parts[1] ?? "").trim();
+
+  const hostToken = parsed.host.trim();
+  const containerToken = parsed.container.trim();
   if (!hostToken || !containerToken || !path.posix.isAbsolute(containerToken)) {
     return null;
   }
-  const optionsToken = parts.slice(2).join(":").trim().toLowerCase();
+  const optionsToken = parsed.options.trim().toLowerCase();
   const optionParts = optionsToken
     ? optionsToken
         .split(",")
@@ -50,6 +58,35 @@ export function parseSandboxBindMount(spec: string): ParsedBindMount | null {
     containerRoot: normalizeContainerPath(containerToken),
     writable,
   };
+}
+
+function splitBindSpec(spec: string): SplitBindSpec | null {
+  const separator = getHostContainerSeparatorIndex(spec);
+  if (separator === -1) {
+    return null;
+  }
+
+  const host = spec.slice(0, separator);
+  const rest = spec.slice(separator + 1);
+  const optionsStart = rest.indexOf(":");
+  if (optionsStart === -1) {
+    return { host, container: rest, options: "" };
+  }
+  return {
+    host,
+    container: rest.slice(0, optionsStart),
+    options: rest.slice(optionsStart + 1),
+  };
+}
+
+function getHostContainerSeparatorIndex(spec: string): number {
+  const hasDriveLetterPrefix = /^[A-Za-z]:[\\/]/.test(spec);
+  for (let i = hasDriveLetterPrefix ? 2 : 0; i < spec.length; i += 1) {
+    if (spec[i] === ":") {
+      return i;
+    }
+  }
+  return -1;
 }
 
 export function buildSandboxFsMounts(sandbox: SandboxContext): SandboxFsMount[] {
@@ -97,10 +134,8 @@ export function resolveSandboxFsPathWithMounts(params: {
   defaultContainerRoot: string;
   mounts: SandboxFsMount[];
 }): SandboxResolvedFsPath {
-  const mountsByContainer = [...params.mounts].toSorted(
-    (a, b) => b.containerRoot.length - a.containerRoot.length,
-  );
-  const mountsByHost = [...params.mounts].toSorted((a, b) => b.hostRoot.length - a.hostRoot.length);
+  const mountsByContainer = [...params.mounts].toSorted(compareMountsByContainerPath);
+  const mountsByHost = [...params.mounts].toSorted(compareMountsByHostPath);
   const input = params.filePath;
   const inputPosix = normalizePosixInput(input);
 
@@ -153,6 +188,34 @@ export function resolveSandboxFsPathWithMounts(params: {
     root: params.defaultWorkspaceRoot,
   });
   throw new Error(`Path escapes sandbox root (${params.defaultWorkspaceRoot}): ${input}`);
+}
+
+function compareMountsByContainerPath(a: SandboxFsMount, b: SandboxFsMount): number {
+  const byLength = b.containerRoot.length - a.containerRoot.length;
+  if (byLength !== 0) {
+    return byLength;
+  }
+  // Keep resolver ordering aligned with docker mount precedence: custom binds can
+  // intentionally shadow default workspace mounts at the same container path.
+  return mountSourcePriority(b.source) - mountSourcePriority(a.source);
+}
+
+function compareMountsByHostPath(a: SandboxFsMount, b: SandboxFsMount): number {
+  const byLength = b.hostRoot.length - a.hostRoot.length;
+  if (byLength !== 0) {
+    return byLength;
+  }
+  return mountSourcePriority(b.source) - mountSourcePriority(a.source);
+}
+
+function mountSourcePriority(source: SandboxFsMount["source"]): number {
+  if (source === "bind") {
+    return 2;
+  }
+  if (source === "agent") {
+    return 1;
+  }
+  return 0;
 }
 
 function dedupeMounts(mounts: SandboxFsMount[]): SandboxFsMount[] {

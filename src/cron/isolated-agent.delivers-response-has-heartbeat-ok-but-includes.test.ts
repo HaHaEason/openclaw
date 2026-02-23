@@ -1,12 +1,8 @@
 import "./isolated-agent.mocks.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliDeps } from "../cli/deps.js";
-import { loadModelCatalog } from "../agents/model-catalog.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
 import { runSubagentAnnounceFlow } from "../agents/subagent-announce.js";
-import { telegramOutbound } from "../channels/plugins/outbound/telegram.js";
-import { setActivePluginRegistry } from "../plugins/runtime.js";
-import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { runCronIsolatedAgentTurn } from "./isolated-agent.js";
 import {
   makeCfg,
@@ -14,22 +10,11 @@ import {
   withTempCronHome,
   writeSessionStore,
 } from "./isolated-agent.test-harness.js";
+import { setupIsolatedAgentTurnMocks } from "./isolated-agent.test-setup.js";
 
 describe("runCronIsolatedAgentTurn", () => {
   beforeEach(() => {
-    vi.stubEnv("OPENCLAW_TEST_FAST", "1");
-    vi.mocked(runEmbeddedPiAgent).mockReset();
-    vi.mocked(loadModelCatalog).mockResolvedValue([]);
-    vi.mocked(runSubagentAnnounceFlow).mockReset().mockResolvedValue(true);
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "telegram",
-          plugin: createOutboundTestPlugin({ id: "telegram", outbound: telegramOutbound }),
-          source: "test",
-        },
-      ]),
-    );
+    setupIsolatedAgentTurnMocks({ fast: true });
   });
 
   it("handles media heartbeat delivery and announce cleanup modes", async () => {
@@ -40,6 +25,7 @@ describe("runCronIsolatedAgentTurn", () => {
         lastTo: "123",
       });
       const deps: CliDeps = {
+        sendMessageSlack: vi.fn(),
         sendMessageWhatsApp: vi.fn(),
         sendMessageTelegram: vi.fn().mockResolvedValue({
           messageId: "t1",
@@ -145,6 +131,58 @@ describe("runCronIsolatedAgentTurn", () => {
         | undefined;
       expect(deleteArgs?.cleanup).toBe("delete");
       expect(deps.sendMessageTelegram).not.toHaveBeenCalled();
+    });
+  });
+
+  it("skips structured outbound delivery when timeout abort is already set", async () => {
+    await withTempCronHome(async (home) => {
+      const storePath = await writeSessionStore(home, {
+        lastProvider: "telegram",
+        lastChannel: "telegram",
+        lastTo: "123",
+      });
+      const deps: CliDeps = {
+        sendMessageSlack: vi.fn(),
+        sendMessageWhatsApp: vi.fn(),
+        sendMessageTelegram: vi.fn().mockResolvedValue({
+          messageId: "t1",
+          chatId: "123",
+        }),
+        sendMessageDiscord: vi.fn(),
+        sendMessageSignal: vi.fn(),
+        sendMessageIMessage: vi.fn(),
+      };
+      const controller = new AbortController();
+      controller.abort("cron: job execution timed out");
+
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+        payloads: [{ text: "HEARTBEAT_OK", mediaUrl: "https://example.com/img.png" }],
+        meta: {
+          durationMs: 5,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+        },
+      });
+
+      const res = await runCronIsolatedAgentTurn({
+        cfg: makeCfg(home, storePath),
+        deps,
+        job: {
+          ...makeJob({
+            kind: "agentTurn",
+            message: "do it",
+          }),
+          delivery: { mode: "announce", channel: "telegram", to: "123" },
+        },
+        message: "do it",
+        sessionKey: "cron:job-1",
+        signal: controller.signal,
+        lane: "cron",
+      });
+
+      expect(res.status).toBe("error");
+      expect(res.error).toContain("timed out");
+      expect(deps.sendMessageTelegram).not.toHaveBeenCalled();
+      expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
     });
   });
 });
