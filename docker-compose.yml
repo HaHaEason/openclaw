@@ -1,6 +1,8 @@
 services:
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
+    env_file:
+      - ${OPENCLAW_INSTANCE_ENV_FILE}
     environment:
       HOME: /home/node
       TERM: xterm-256color
@@ -27,10 +29,12 @@ services:
     init: true
     restart: unless-stopped
     command: >
-      sh -lc 'exec node dist/index.js gateway --bind "${OPENCLAW_GATEWAY_BIND:-lan}" --port "${OPENCLAW_GATEWAY_LISTEN_PORT:-18789}" ${OPENCLAW_GATEWAY_VERBOSE:+--verbose}'
+      sh -lc 'bootstrap_rel="${OPENCLAW_BOOTSTRAP_SCRIPT:-bootstrap.sh}"; case "$$bootstrap_rel" in ""|/*|*..*) echo "WARN: invalid OPENCLAW_BOOTSTRAP_SCRIPT: $$bootstrap_rel" >&2 ;; *) bootstrap_path="/home/node/.openclaw/$$bootstrap_rel"; if [ -f "$$bootstrap_path" ]; then chmod +x "$$bootstrap_path"; "$$bootstrap_path"; fi ;; esac; exec node dist/index.js gateway --bind "${OPENCLAW_GATEWAY_BIND:-lan}" --port "${OPENCLAW_GATEWAY_LISTEN_PORT:-18789}" ${OPENCLAW_GATEWAY_VERBOSE:+--verbose}'
 
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
+    env_file:
+      - ${OPENCLAW_INSTANCE_ENV_FILE}
     environment:
       HOME: /home/node
       TERM: xterm-256color

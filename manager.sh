@@ -130,20 +130,20 @@ ensure_docker_ready() {
 usage() {
   cat <<'EOF'
 Usage:
-  ./docker-instance-manager.sh [--instances-dir <dir>] <command> [args...]
-  ./docker-instance-manager.sh build [--image <image>] [--apt-packages "<pkg1 pkg2>"] [--with-base-build]
-  ./docker-instance-manager.sh create <name> [options]
-  ./docker-instance-manager.sh up <name> [--verbose]
-  ./docker-instance-manager.sh down <name>
-  ./docker-instance-manager.sh restart <name>
-  ./docker-instance-manager.sh status [name]
-  ./docker-instance-manager.sh logs <name> [-f] [--verbose]
-  ./docker-instance-manager.sh onboard <name>
-  ./docker-instance-manager.sh cli <name> -- <openclaw-cli args...>
-  ./docker-instance-manager.sh devices <name> -- <devices args...>
-  ./docker-instance-manager.sh plugin-install <name> <path-or-spec> [options]
-  ./docker-instance-manager.sh plugin-uninstall <name> <plugin-id> [options]
-  ./docker-instance-manager.sh list
+  ./manager.sh [--instances-dir <dir>] <command> [args...]
+  ./manager.sh build [--image <image>] [--apt-packages "<pkg1 pkg2>"] [--with-base-build]
+  ./manager.sh create <name> [options]
+  ./manager.sh up <name> [--verbose]
+  ./manager.sh down <name>
+  ./manager.sh restart <name>
+  ./manager.sh status [name]
+  ./manager.sh logs <name> [-f] [--verbose]
+  ./manager.sh onboard <name>
+  ./manager.sh cli <name> -- <openclaw-cli args...>
+  ./manager.sh devices <name> -- <devices args...>
+  ./manager.sh plugin-install <name> <path-or-spec> [options]
+  ./manager.sh plugin-uninstall <name> <plugin-id> [options]
+  ./manager.sh list
 
 Create options:
   --gateway-port <port>      Host port for gateway (container 18789)
@@ -158,12 +158,15 @@ Create options:
   --home-volume <name|path>  Mount to /home/node (named volume or host path)
   --apt-packages "<pkgs>"    Stored for optional build convenience
   --mount <host:container>   Extra mount, repeatable
+  --nginx-config-dir <dir>   Host dir mounted to /etc/nginx (default: ~/.openclaw/instances/<name>/nginx)
+  --no-nginx-config-mount    Disable automatic /etc/nginx external mount
   --verbose                  Default gateway verbose mode for this instance (stored)
   --http-proxy <url>         HTTP proxy URL (default: http://127.0.0.1:10871)
   --https-proxy <url>        HTTPS proxy URL (default: same as --http-proxy)
   --no-proxy <csv>           NO_PROXY value (default: localhost,127.0.0.1,::1,host.docker.internal)
   --network-mode <mode>      Docker network mode: bridge|host (default: host)
   --tz <iana-tz>             Timezone (default: Asia/Shanghai)
+  --bootstrap-script <path>  Config-dir relative bootstrap script (default: bootstrap.sh)
 
 Global options:
   --instances-dir <dir>      Instance state dir (default: ~/.openclaw/docker-instances)
@@ -185,15 +188,82 @@ Plugin uninstall options:
   --restart                  Restart gateway after uninstall
 
 Examples:
-  ./docker-instance-manager.sh build --image openclaw:v2026.2.15
-  ./docker-instance-manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
-  ./docker-instance-manager.sh create prod-a --network-mode host
-  ./docker-instance-manager.sh up prod-a --verbose
-  ./docker-instance-manager.sh cli prod-a -- channels status --probe
-  ./docker-instance-manager.sh devices prod-a -- list
-  ./docker-instance-manager.sh plugin-install prod-a @openclaw/zalo --set-json ./plugin-config.json --restart
-  ./docker-instance-manager.sh plugin-uninstall prod-a zalo --restart
+  ./manager.sh build --image openclaw:v2026.2.15
+  ./manager.sh create prod-a --gateway-port 28789 --bridge-port 28790
+  ./manager.sh create prod-a --network-mode host
+  ./manager.sh up prod-a --verbose
+  ./manager.sh cli prod-a -- channels status --probe
+  ./manager.sh devices prod-a -- list
+  ./manager.sh plugin-install prod-a @openclaw/zalo --set-json ./plugin-config.json --restart
+  ./manager.sh plugin-uninstall prod-a zalo --restart
 EOF
+}
+
+is_safe_config_relative_path() {
+  local rel_path="$1"
+  if [[ -z "$rel_path" ]]; then
+    return 1
+  fi
+  if [[ "$rel_path" == /* ]]; then
+    return 1
+  fi
+  if [[ "$rel_path" == *".."* ]]; then
+    return 1
+  fi
+  return 0
+}
+
+seed_nginx_config_if_missing() {
+  local nginx_config_dir="$1"
+  local target_conf="$nginx_config_dir/nginx.conf"
+  local enabled_dir="$nginx_config_dir/enabled"
+  local default_enabled_conf="$enabled_dir/00-default.conf"
+  local template_conf="$ROOT_DIR/docker/nginx.nonroot.conf"
+  local default_enabled_template="$ROOT_DIR/docker/nginx.enabled.00-default.conf"
+
+  mkdir -p "$nginx_config_dir"
+  if [[ ! -f "$target_conf" ]]; then
+    if [[ -f "$template_conf" ]]; then
+      cp "$template_conf" "$target_conf"
+    else
+      cat >"$target_conf" <<'EOF'
+worker_processes auto;
+pid /tmp/nginx/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    sendfile on;
+    keepalive_timeout 65;
+
+    access_log /dev/stdout;
+    error_log /dev/stderr warn;
+
+    client_body_temp_path /tmp/nginx/client_temp;
+    proxy_temp_path /tmp/nginx/proxy_temp;
+    fastcgi_temp_path /tmp/nginx/fastcgi_temp;
+    uwsgi_temp_path /tmp/nginx/uwsgi_temp;
+    scgi_temp_path /tmp/nginx/scgi_temp;
+    include /etc/nginx/enabled/*.conf;
+}
+EOF
+    fi
+  fi
+
+  mkdir -p "$enabled_dir"
+  if [[ ! -f "$default_enabled_conf" ]]; then
+    if [[ -f "$default_enabled_template" ]]; then
+      cp "$default_enabled_template" "$default_enabled_conf"
+    else
+      echo "Missing nginx enabled default template: $default_enabled_template" >&2
+      return 1
+    fi
+  fi
 }
 
 instance_env_file() {
@@ -364,7 +434,7 @@ run_compose() {
   if [[ -f "$compose_file" ]]; then
     args+=(-f "$compose_file")
   fi
-  docker compose "${args[@]}" "$@"
+  OPENCLAW_INSTANCE_ENV_FILE="$env_file" docker compose "${args[@]}" "$@"
 }
 
 ensure_instance_exists() {
@@ -372,7 +442,7 @@ ensure_instance_exists() {
   local env_file
   env_file="$(instance_env_file "$instance")"
   if [[ ! -f "$env_file" ]]; then
-    echo "Instance '$instance' not found. Run: ./docker-instance-manager.sh create $instance" >&2
+    echo "Instance '$instance' not found. Run: ./manager.sh create $instance" >&2
     exit 1
   fi
 }
@@ -452,11 +522,13 @@ cmd_create() {
 
   local env_file compose_file
   local gateway_port bridge_port
-  local config_dir workspace_dir
+  local config_dir workspace_dir nginx_config_dir
   local image bind token apt_packages home_volume expose_bridge gateway_verbose network_mode
+  local nginx_config_mount
   local gateway_listen_port
   local timezone
   local http_proxy https_proxy no_proxy
+  local bootstrap_script
   local -a extra_mounts
 
   env_file="$(instance_env_file "$instance")"
@@ -465,6 +537,7 @@ cmd_create() {
   bridge_port=""
   config_dir="$HOME/.openclaw/instances/$instance/config"
   workspace_dir="$HOME/.openclaw/instances/$instance/workspace"
+  nginx_config_dir="$HOME/.openclaw/instances/$instance/nginx"
   image="$DEFAULT_IMAGE"
   bind="$DEFAULT_BIND"
   token="${OPENCLAW_GATEWAY_TOKEN:-}"
@@ -474,9 +547,11 @@ cmd_create() {
   gateway_verbose="${OPENCLAW_GATEWAY_VERBOSE:-}"
   timezone="${OPENCLAW_TZ:-$DEFAULT_TZ}"
   network_mode="${OPENCLAW_DOCKER_NETWORK_MODE:-host}"
+  nginx_config_mount="${OPENCLAW_NGINX_CONFIG_MOUNT:-1}"
   http_proxy="${OPENCLAW_HTTP_PROXY:-http://127.0.0.1:10871}"
   https_proxy="${OPENCLAW_HTTPS_PROXY:-$http_proxy}"
   no_proxy="${OPENCLAW_NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal}"
+  bootstrap_script="${OPENCLAW_BOOTSTRAP_SCRIPT:-bootstrap.sh}"
   extra_mounts=()
   gateway_listen_port="${OPENCLAW_GATEWAY_LISTEN_PORT:-18789}"
 
@@ -531,6 +606,14 @@ cmd_create() {
         extra_mounts+=("$2")
         shift 2
         ;;
+      --nginx-config-dir)
+        nginx_config_dir="$2"
+        shift 2
+        ;;
+      --no-nginx-config-mount)
+        nginx_config_mount="0"
+        shift
+        ;;
       --verbose)
         gateway_verbose="1"
         shift
@@ -555,12 +638,21 @@ cmd_create() {
         timezone="$2"
         shift 2
         ;;
+      --bootstrap-script)
+        bootstrap_script="$2"
+        shift 2
+        ;;
       *)
         echo "Unknown option for create: $1" >&2
         exit 1
         ;;
     esac
   done
+
+  if ! is_safe_config_relative_path "$bootstrap_script"; then
+    echo "Invalid --bootstrap-script: $bootstrap_script (must be config-dir relative, without ..)" >&2
+    exit 1
+  fi
 
   if [[ "$network_mode" != "bridge" && "$network_mode" != "host" ]]; then
     echo "Invalid --network-mode: $network_mode (allowed: bridge|host)" >&2
@@ -590,10 +682,16 @@ cmd_create() {
   fi
 
   mkdir -p "$config_dir" "$workspace_dir"
+  if [[ "$nginx_config_mount" == "1" ]]; then
+    seed_nginx_config_if_missing "$nginx_config_dir"
+    extra_mounts+=("$nginx_config_dir:/etc/nginx")
+  fi
 
   cat >"$env_file" <<EOF
 OPENCLAW_CONFIG_DIR=$config_dir
 OPENCLAW_WORKSPACE_DIR=$workspace_dir
+OPENCLAW_NGINX_CONFIG_DIR=$nginx_config_dir
+OPENCLAW_NGINX_CONFIG_MOUNT=$nginx_config_mount
 OPENCLAW_GATEWAY_PORT=$gateway_port
 OPENCLAW_GATEWAY_LISTEN_PORT=$gateway_listen_port
 OPENCLAW_BRIDGE_PORT=$bridge_port
@@ -610,6 +708,7 @@ OPENCLAW_HTTP_PROXY=$http_proxy
 OPENCLAW_HTTPS_PROXY=$https_proxy
 OPENCLAW_NO_PROXY=$no_proxy
 OPENCLAW_DOCKER_NETWORK_MODE=$network_mode
+OPENCLAW_BOOTSTRAP_SCRIPT=$bootstrap_script
 EOF
 
   write_extra_compose \
@@ -634,7 +733,13 @@ EOF
     echo "  bridge port: disabled"
   fi
   echo "  config dir: $config_dir"
+  echo "  bootstrap script: $bootstrap_script"
   echo "  workspace dir: $workspace_dir"
+  if [[ "$nginx_config_mount" == "1" ]]; then
+    echo "  nginx config dir: $nginx_config_dir"
+  else
+    echo "  nginx config dir: disabled"
+  fi
   if [[ -n "$home_volume" ]]; then
     echo "  home volume: $home_volume"
   fi
@@ -648,9 +753,9 @@ EOF
   fi
   echo ""
   echo "Next steps:"
-  echo "  ./docker-instance-manager.sh build --image $image --apt-packages \"$apt_packages\""
-  echo "  ./docker-instance-manager.sh onboard $instance"
-  echo "  ./docker-instance-manager.sh up $instance"
+  echo "  ./manager.sh build --image $image --apt-packages \"$apt_packages\""
+  echo "  ./manager.sh onboard $instance"
+  echo "  ./manager.sh up $instance"
 }
 
 cmd_up() {
@@ -786,7 +891,7 @@ cmd_cli() {
     shift
   fi
   if [[ $# -eq 0 ]]; then
-    echo "Missing cli args. Example: ./docker-instance-manager.sh cli <name> -- channels status --probe" >&2
+    echo "Missing cli args. Example: ./manager.sh cli <name> -- channels status --probe" >&2
     exit 1
   fi
 
@@ -834,7 +939,7 @@ cmd_devices() {
     shift
   fi
   if [[ $# -eq 0 ]]; then
-    echo "Missing devices args. Example: ./docker-instance-manager.sh devices <name> -- list" >&2
+    echo "Missing devices args. Example: ./manager.sh devices <name> -- list" >&2
     exit 1
   fi
 
@@ -866,7 +971,7 @@ cmd_devices() {
 cmd_plugin_install() {
   ensure_docker_ready
   if [[ $# -lt 2 ]]; then
-    echo "Usage: ./docker-instance-manager.sh plugin-install <name> <path-or-spec> [--link] [--set-json <file>] [--restart]" >&2
+    echo "Usage: ./manager.sh plugin-install <name> <path-or-spec> [--link] [--set-json <file>] [--restart]" >&2
     exit 1
   fi
 
@@ -952,7 +1057,7 @@ for (const [k, v] of Object.entries(data)) {
 cmd_plugin_uninstall() {
   ensure_docker_ready
   if [[ $# -lt 2 ]]; then
-    echo "Usage: ./docker-instance-manager.sh plugin-uninstall <name> <plugin-id> [--keep-files] [--dry-run] [--no-force] [--restart]" >&2
+    echo "Usage: ./manager.sh plugin-uninstall <name> <plugin-id> [--keep-files] [--dry-run] [--no-force] [--restart]" >&2
     exit 1
   fi
 
@@ -1027,7 +1132,7 @@ cmd_list() {
     echo ""
   done
   if [[ "$found" == false ]]; then
-    echo "No instances yet. Run: ./docker-instance-manager.sh create <name>"
+    echo "No instances yet. Run: ./manager.sh create <name>"
   fi
 }
 
@@ -1066,53 +1171,53 @@ main() {
       cmd_create "$@"
       ;;
     up)
-      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh up <name> [--verbose]" >&2; exit 1; }
+      [[ $# -ge 1 ]] || { echo "Usage: ./manager.sh up <name> [--verbose]" >&2; exit 1; }
       cmd_up "$@"
       ;;
     down)
-      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh down <name>" >&2; exit 1; }
+      [[ $# -eq 1 ]] || { echo "Usage: ./manager.sh down <name>" >&2; exit 1; }
       cmd_down "$1"
       ;;
     restart)
-      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh restart <name>" >&2; exit 1; }
+      [[ $# -eq 1 ]] || { echo "Usage: ./manager.sh restart <name>" >&2; exit 1; }
       cmd_restart "$1"
       ;;
     status)
-      [[ $# -le 1 ]] || { echo "Usage: ./docker-instance-manager.sh status [name]" >&2; exit 1; }
+      [[ $# -le 1 ]] || { echo "Usage: ./manager.sh status [name]" >&2; exit 1; }
       cmd_status "$@"
       ;;
     logs)
-      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh logs <name> [-f] [--verbose]" >&2; exit 1; }
+      [[ $# -ge 1 ]] || { echo "Usage: ./manager.sh logs <name> [-f] [--verbose]" >&2; exit 1; }
       cmd_logs "$@"
       ;;
     onboard)
-      [[ $# -eq 1 ]] || { echo "Usage: ./docker-instance-manager.sh onboard <name>" >&2; exit 1; }
+      [[ $# -eq 1 ]] || { echo "Usage: ./manager.sh onboard <name>" >&2; exit 1; }
       cmd_onboard "$1"
       ;;
     cli)
-      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh cli <name> -- <args...>" >&2; exit 1; }
+      [[ $# -ge 1 ]] || { echo "Usage: ./manager.sh cli <name> -- <args...>" >&2; exit 1; }
       cmd_cli "$@"
       ;;
     devices)
-      [[ $# -ge 1 ]] || { echo "Usage: ./docker-instance-manager.sh devices <name> -- <args...>" >&2; exit 1; }
+      [[ $# -ge 1 ]] || { echo "Usage: ./manager.sh devices <name> -- <args...>" >&2; exit 1; }
       cmd_devices "$@"
       ;;
     plugin-install)
       [[ $# -ge 2 ]] || {
-        echo "Usage: ./docker-instance-manager.sh plugin-install <name> <path-or-spec> [--link] [--set-json <file>] [--restart]" >&2
+        echo "Usage: ./manager.sh plugin-install <name> <path-or-spec> [--link] [--set-json <file>] [--restart]" >&2
         exit 1
       }
       cmd_plugin_install "$@"
       ;;
     plugin-uninstall)
       [[ $# -ge 2 ]] || {
-        echo "Usage: ./docker-instance-manager.sh plugin-uninstall <name> <plugin-id> [--keep-files] [--dry-run] [--no-force] [--restart]" >&2
+        echo "Usage: ./manager.sh plugin-uninstall <name> <plugin-id> [--keep-files] [--dry-run] [--no-force] [--restart]" >&2
         exit 1
       }
       cmd_plugin_uninstall "$@"
       ;;
     list)
-      [[ $# -eq 0 ]] || { echo "Usage: ./docker-instance-manager.sh list" >&2; exit 1; }
+      [[ $# -eq 0 ]] || { echo "Usage: ./manager.sh list" >&2; exit 1; }
       cmd_list
       ;;
     -h|--help|help)
