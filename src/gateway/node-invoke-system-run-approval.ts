@@ -1,5 +1,5 @@
-import type { ExecApprovalRecord } from "./exec-approval-manager.js";
 import { resolveSystemRunCommand } from "../infra/system-run-command.js";
+import type { ExecApprovalRecord } from "./exec-approval-manager.js";
 
 type SystemRunParamsLike = {
   command?: unknown;

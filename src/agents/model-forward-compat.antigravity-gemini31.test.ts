@@ -1,7 +1,7 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
-import type { ModelRegistry } from "./pi-model-discovery.js";
 import { resolveForwardCompatModel } from "./model-forward-compat.js";
+import type { ModelRegistry } from "./pi-model-discovery.js";
 
 function makeRegistry(): ModelRegistry {
   const templates = new Map<string, Model<Api>>();

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { CronJob } from "./types.js";
 import { createMockCronStateForJobs } from "./service.test-harness.js";
 import { recomputeNextRunsForMaintenance } from "./service/jobs.js";
+import type { CronJob } from "./types.js";
 
 describe("issue #13992 regression - cron jobs skip execution", () => {
   it("should NOT recompute nextRunAtMs for past-due jobs during maintenance", () => {

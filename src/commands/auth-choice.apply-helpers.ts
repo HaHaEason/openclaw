@@ -1,7 +1,7 @@
-import type { WizardPrompter } from "../wizard/prompts.js";
-import type { ApplyAuthChoiceParams } from "./auth-choice.apply.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
+import type { WizardPrompter } from "../wizard/prompts.js";
 import { formatApiKeyPreview } from "./auth-choice.api-key.js";
+import type { ApplyAuthChoiceParams } from "./auth-choice.apply.js";
 import { applyDefaultModelChoice } from "./auth-choice.default-model.js";
 
 export function createAuthChoiceAgentModelNoter(
