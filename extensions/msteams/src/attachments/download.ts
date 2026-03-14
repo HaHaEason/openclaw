@@ -1,8 +1,3 @@
-import type {
-  MSTeamsAccessTokenProvider,
-  MSTeamsAttachmentLike,
-  MSTeamsInboundMedia,
-} from "./types.js";
 import { getMSTeamsRuntime } from "../runtime.js";
 import { downloadAndStoreMSTeamsRemoteMedia } from "./remote-media.js";
 import {
@@ -17,6 +12,11 @@ import {
   resolveAllowedHosts,
   safeFetch,
 } from "./shared.js";
+import type {
+  MSTeamsAccessTokenProvider,
+  MSTeamsAttachmentLike,
+  MSTeamsInboundMedia,
+} from "./types.js";
 
 type DownloadCandidate = {
   url: string;
