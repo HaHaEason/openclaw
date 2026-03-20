@@ -173,6 +173,7 @@ Global options:
 
 Logs options:
   -f, --follow               Follow log output
+                             Defaults to --tail 200 unless --tail is provided
   --verbose                  Show instance metadata and logs for all services
 
 Plugin install options:
@@ -820,10 +821,12 @@ cmd_logs() {
   shift
   ensure_instance_exists "$instance"
   local env_file verbose image gateway_port bridge_port bind_mode
-  local timezone
+  local timezone has_follow has_tail
   local -a log_args
 
   verbose=false
+  has_follow=false
+  has_tail=false
   log_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -832,11 +835,24 @@ cmd_logs() {
         shift
         ;;
       *)
+        case "$1" in
+          -f|--follow)
+            has_follow=true
+            ;;
+          --tail|--tail=*)
+            has_tail=true
+            ;;
+        esac
         log_args+=("$1")
         shift
         ;;
     esac
   done
+
+  # Keep follow output readable unless the user explicitly requests a tail size.
+  if [[ "$has_follow" == true && "$has_tail" == false ]]; then
+    log_args+=(--tail 200)
+  fi
 
   if [[ "$verbose" == true ]]; then
     env_file="$(instance_env_file "$instance")"
